@@ -21,9 +21,9 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: pnpm
-      - run: npm install -g npm@latest
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: npm publish --access public --provenance
+      # Node 22 ships npm 10.x; Trusted Publishing needs >= 11.5.1.
+      - run: npx -y npm@latest publish --access public --provenance
