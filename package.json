@@ -3,6 +3,10 @@
   "version": "0.3.3",
   "description": "Transport-agnostic message reducer and types for Jack chat (desktop + mobile).",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ottimis/JACK-chat-core.git"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
