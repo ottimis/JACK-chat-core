@@ -165,6 +165,20 @@ export type AgentEvent =
   | { kind: 'slash-feedback'; text: string; status?: 'ok' | 'error' }
   | { kind: 'context-usage'; usage: ContextUsageInfo }
   | { kind: 'user-prompt'; text: string }
+  /**
+   * Server-originated notification that a new user turn just started.
+   * Emitted alongside `sendUserTurn()` regardless of the source (desktop
+   * IPC or mobile HTTP) so that passive observers (e.g. a mobile app
+   * watching a desktop-driven session) can render the prompt bubble and
+   * flip `running: true` immediately, without having to wait for the
+   * first `stream_event` to trickle in.
+   *
+   * The reducer de-duplicates against the most recent user message in
+   * state so a client that already dispatched `user-prompt` locally
+   * (e.g. the mobile app when it itself was the originator) doesn't
+   * render the same bubble twice.
+   */
+  | { kind: 'turn-started'; text: string }
   | { kind: 'reset'; sessionId?: string | null }
   | { kind: 'load-history'; rawMessages: SdkMessage[]; sessionId: string }
   | { kind: 'slash-invocation'; name: string; args?: string }

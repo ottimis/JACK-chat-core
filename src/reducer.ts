@@ -136,6 +136,37 @@ export function reduce(
       }
     }
 
+    case 'turn-started': {
+      // Dedup: if a client (desktop or a mobile originator) already dispatched
+      // `user-prompt` locally for this exact turn, the most recent user
+      // message in state already carries the same text. Echoing it again
+      // would produce a duplicate bubble. Passive observers (e.g. a mobile
+      // watching a desktop session) land in the `else` branch and get the
+      // bubble + `running: true` immediately.
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        const m = state.messages[i]
+        if (!m || m.type !== 'user') continue
+        if (m.content === event.text) {
+          return state.running ? state : { ...state, running: true }
+        }
+        break
+      }
+      const { state: s2, id } = bumpId(state)
+      return {
+        ...s2,
+        running: true,
+        messages: [
+          ...s2.messages,
+          {
+            id,
+            type: 'user',
+            content: event.text,
+            timestamp: ctx.now()
+          }
+        ]
+      }
+    }
+
     case 'slash-invocation': {
       // Normalise the command name: strip a single leading '/' if present so
       // client-dispatched invocations render identically to chips derived from
