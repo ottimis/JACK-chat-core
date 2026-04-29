@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from './normalized.js'
+import type { NormalizedMessage, ToolShape } from './normalized.js'
 import type {
   ContextUsageInfo,
   FileChangeData,
@@ -34,6 +34,33 @@ export type ChatMessage = {
   content: string
   thinking?: string
   toolName?: string
+  /**
+   * Canonical shape from the provider's tool catalog. Set by the reducer
+   * when the assistant final message lands (`NormalizedBlock.tool_use.toolRef`)
+   * and during `loadHistory` replay. The renderer should key card selection
+   * off this — `toolName` becomes a fallback / display detail rather than
+   * the dispatch axis.
+   *
+   * `undefined` while only the streaming `tool_use` start has arrived
+   * (the stream event only carries the wire name, not the shape).
+   * Renderers should fall back to `toolName` matching in that window.
+   *
+   * For MCP-routed tools the value is `'mcp'` — the renderer combines it
+   * with `toolMcpServerSlug` to render the MCP badge.
+   */
+  toolShape?: ToolShape
+  /**
+   * Distinguishes native tools from MCP-routed tools. Set together with
+   * `toolShape` at applyAssistantFinal / loadHistory time. Lets the
+   * renderer show the MCP badge + server slug without re-parsing
+   * `toolName`. `undefined` while only streaming start info is available.
+   */
+  toolRefKind?: 'native' | 'mcp'
+  /**
+   * MCP server slug when `toolRefKind === 'mcp'`. Same source as
+   * `NormalizedToolRef.serverSlug`. `undefined` for native tools.
+   */
+  toolMcpServerSlug?: string
   toolInput?: Record<string, unknown>
   toolStatus?: 'running' | 'done' | 'error'
   fileChange?: FileChangeData

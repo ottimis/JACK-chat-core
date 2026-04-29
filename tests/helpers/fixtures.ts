@@ -43,6 +43,20 @@ export function mcpToolUse(
   return { type: 'tool_use', toolUseId, toolRef: ref, input }
 }
 
+/**
+ * Server-slug-first variant — preferred when the test's emphasis is on
+ * the server boundary (e.g. `figma`, `linear`, `jack`) rather than the
+ * tool family. Equivalent to {@link mcpToolUse} with reordered params.
+ */
+export function mcpBlock(
+  serverSlug: string,
+  toolName: string,
+  toolUseId: string,
+  input: unknown
+): NormalizedBlock {
+  return mcpToolUse(toolName, toolUseId, input, serverSlug)
+}
+
 export function textBlock(text: string): NormalizedBlock {
   return { type: 'text', text }
 }
