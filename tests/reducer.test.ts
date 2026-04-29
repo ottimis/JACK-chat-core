@@ -1,7 +1,20 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { createInitialState, reduce, loadHistory } from '../src/reducer.js'
-import type { AgentEvent, SdkMessage } from '../src/types.js'
+import type { AgentEvent } from '../src/types.js'
+import type { NormalizedMessage } from '../src/normalized.js'
+import {
+  assistantMsg,
+  claudeStream,
+  mcpToolUse,
+  nativeToolUse,
+  sessionState,
+  textBlock,
+  toolResult,
+  turnResultError,
+  turnResultSuccess,
+  userMsg
+} from './helpers/fixtures.js'
 
 const SID = 'session-1'
 const ctx = { now: () => 1_000_000 }
@@ -15,15 +28,15 @@ function run(events: AgentEvent[]) {
 describe('reducer — streaming assistant turn', () => {
   it('builds a single assistant bubble from thinking + text deltas', () => {
     const state = run([
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm ' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'let me see' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hello ' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'world' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_stop', index: 1 } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'message_stop' } } }
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm ' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'let me see' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 0 }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 1, content_block: { type: 'text' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Hello ' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'world' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 1 }) },
+      { kind: 'sdk', message: claudeStream({ type: 'message_stop' }) }
     ])
 
     assert.equal(state.messages.length, 1)
@@ -37,9 +50,9 @@ describe('reducer — streaming assistant turn', () => {
 
   it('interrupts assistant bubble when a tool_use starts', () => {
     const state = run([
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'checking...' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu_1', name: 'Read' } } } }
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'text' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'checking...' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tu_1', name: 'Read' } }) }
     ])
 
     assert.equal(state.messages.length, 2)
@@ -56,19 +69,13 @@ describe('reducer — streaming assistant turn', () => {
 
   it('marks tool as done on matching tool_result', () => {
     let state = run([
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_1', name: 'Read' } } } },
-      { kind: 'sdk', message: { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } } },
-      { kind: 'sdk', message: { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { file_path: '/foo' } }] } } }
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_1', name: 'Read' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 0 }) },
+      { kind: 'sdk', message: assistantMsg([nativeToolUse('Read', 'fs.read', 'tu_1', { file_path: '/foo' })]) }
     ])
     state = reduce(
       state,
-      {
-        kind: 'sdk',
-        message: {
-          type: 'user',
-          message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', is_error: false }] }
-        }
-      },
+      { kind: 'sdk', message: userMsg([toolResult('tu_1', false)]) },
       ctx
     )
     const tool = state.messages.find((m) => m.id === 'tu_1')!
@@ -82,36 +89,19 @@ describe('reducer — task tools', () => {
     let state = createInitialState(SID)
     state = reduce(
       state,
-      {
-        kind: 'sdk',
-        message: {
-          type: 'assistant',
-          message: { content: [{ type: 'tool_use', id: 't1', name: 'TaskCreate', input: { subject: 'A' } }] }
-        }
-      },
+      { kind: 'sdk', message: assistantMsg([mcpToolUse('TaskCreate', 't1', { subject: 'A' })]) },
+      ctx
+    )
+    state = reduce(
+      state,
+      { kind: 'sdk', message: assistantMsg([mcpToolUse('TaskCreate', 't2', { subject: 'B' })]) },
       ctx
     )
     state = reduce(
       state,
       {
         kind: 'sdk',
-        message: {
-          type: 'assistant',
-          message: { content: [{ type: 'tool_use', id: 't2', name: 'TaskCreate', input: { subject: 'B' } }] }
-        }
-      },
-      ctx
-    )
-    state = reduce(
-      state,
-      {
-        kind: 'sdk',
-        message: {
-          type: 'assistant',
-          message: {
-            content: [{ type: 'tool_use', id: 't3', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } }]
-          }
-        }
+        message: assistantMsg([mcpToolUse('TaskUpdate', 't3', { taskId: '1', status: 'completed' })])
       },
       ctx
     )
@@ -128,10 +118,11 @@ describe('reducer — task tools', () => {
     const state = run([
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 't1', name: 'TaskCreate' } }
-        }
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 't1', name: 'mcp__jack__TaskCreate' }
+        })
       }
     ])
     assert.equal(state.messages.length, 0)
@@ -141,13 +132,7 @@ describe('reducer — task tools', () => {
 describe('reducer — slash commands and CLI markers', () => {
   it('renders a slash-command chip for envelope-shaped user messages', () => {
     const state = run([
-      {
-        kind: 'sdk',
-        message: {
-          type: 'user',
-          message: { content: [{ type: 'text', text: '<command-name>clear</command-name>' }] }
-        }
-      }
+      { kind: 'sdk', message: userMsg([textBlock('<command-name>clear</command-name>')]) }
     ])
     assert.equal(state.messages.length, 1)
     const m = state.messages[0]!
@@ -156,28 +141,28 @@ describe('reducer — slash commands and CLI markers', () => {
   })
 
   it('ignores text-only user messages that are pure CLI markers in history', () => {
-    const history: SdkMessage[] = [
-      { type: 'user', message: { content: [{ type: 'text', text: '<local-command-stdout>ok</local-command-stdout>' }] } }
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('<local-command-stdout>ok</local-command-stdout>')])
     ]
     const state = loadHistory(history, SID, ctx)
     assert.equal(state.messages.length, 0)
   })
 })
 
-describe('reducer — result and system', () => {
-  it('clears running flag and status on result:success', () => {
+describe('reducer — turn_result and session_state', () => {
+  it('clears running flag and status on turn_result success', () => {
     let state = createInitialState(SID)
     state = { ...state, running: true, statusLabel: 'Thinking' }
-    state = reduce(state, { kind: 'sdk', message: { type: 'result', subtype: 'success' } }, ctx)
+    state = reduce(state, { kind: 'sdk', message: turnResultSuccess() }, ctx)
     assert.equal(state.running, false)
     assert.equal(state.statusLabel, null)
     assert.equal(state.messages.length, 0, 'success emits no result card')
   })
 
-  it('emits a result card on non-success result', () => {
+  it('emits a result card on non-success turn_result (max turns)', () => {
     const state = reduce(
       createInitialState(SID),
-      { kind: 'sdk', message: { type: 'result', subtype: 'error_max_turns' } },
+      { kind: 'sdk', message: turnResultError('error_max_turns') },
       ctx
     )
     assert.equal(state.messages.length, 1)
@@ -185,13 +170,24 @@ describe('reducer — result and system', () => {
     assert.equal(state.messages[0]!.content, 'Reached max turns')
   })
 
-  it('maps system:status to statusLabel', () => {
+  it('emits a generic result card for arbitrary error subtypes', () => {
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'sdk', message: turnResultError('quota_exceeded') },
+      ctx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.content, 'Error: quota_exceeded')
+  })
+
+  it('maps session_state.running to Thinking, idle/requires_action to null', () => {
     let state = createInitialState(SID)
-    state = reduce(state, { kind: 'sdk', message: { type: 'system', subtype: 'status', status: 'requesting' } }, ctx)
+    state = reduce(state, { kind: 'sdk', message: sessionState('running') }, ctx)
     assert.equal(state.statusLabel, 'Thinking')
-    state = reduce(state, { kind: 'sdk', message: { type: 'system', subtype: 'status', status: 'compacting' } }, ctx)
-    assert.equal(state.statusLabel, 'Compacting')
-    state = reduce(state, { kind: 'sdk', message: { type: 'system', subtype: 'status', status: null } }, ctx)
+    state = reduce(state, { kind: 'sdk', message: sessionState('requires_action') }, ctx)
+    assert.equal(state.statusLabel, null)
+    state = reduce(state, { kind: 'sdk', message: sessionState('running') }, ctx)
+    state = reduce(state, { kind: 'sdk', message: sessionState('idle') }, ctx)
     assert.equal(state.statusLabel, null)
   })
 })
@@ -223,10 +219,11 @@ describe('reducer — permission and file-change', () => {
     let state = run([
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_x', name: 'Edit' } }
-        }
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_x', name: 'Edit' }
+        })
       }
     ])
     state = reduce(
@@ -251,17 +248,12 @@ describe('reducer — permission and file-change', () => {
 
 describe('loadHistory', () => {
   it('replays a simple transcript into ordered bubbles', () => {
-    const history: SdkMessage[] = [
-      { type: 'user', message: { content: 'ciao' } },
-      {
-        type: 'assistant',
-        message: {
-          content: [
-            { type: 'text', text: 'ok' },
-            { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/f' } }
-          ]
-        }
-      }
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('ciao')]),
+      assistantMsg([
+        textBlock('ok'),
+        nativeToolUse('Read', 'fs.read', 'tu1', { file_path: '/f' })
+      ])
     ]
     const state = loadHistory(history, SID, ctx)
     assert.equal(state.messages.length, 3)
@@ -271,6 +263,25 @@ describe('loadHistory', () => {
     assert.equal(state.messages[1]!.content, 'ok')
     assert.equal(state.messages[2]!.type, 'tool')
     assert.equal(state.messages[2]!.id, 'tu1')
+    assert.equal(state.messages[2]!.toolName, 'Read')
+    assert.deepEqual(state.messages[2]!.toolInput, { file_path: '/f' })
+  })
+
+  it('aggregates jack mcp task tools from history into a task-list message', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('do stuff')]),
+      assistantMsg([
+        textBlock('starting'),
+        mcpToolUse('TaskCreate', 't1', { subject: 'A' }),
+        mcpToolUse('TaskCreate', 't2', { subject: 'B' })
+      ])
+    ]
+    const state = loadHistory(history, SID, ctx)
+    // user 'do stuff' + assistant 'starting' + task-list aggregation
+    assert.equal(state.messages.length, 3)
+    const list = state.messages[2]!
+    assert.equal(list.type, 'task-list')
+    assert.equal(list.tasks?.length, 2)
   })
 })
 
@@ -372,7 +383,6 @@ describe('reducer — permission-resolved', () => {
       ctx
     )
     assert.equal(after.messages.length, state.messages.length)
-    // No message gained a streaming flag.
     for (const m of after.messages) {
       assert.notEqual(m.streaming, true)
     }
@@ -381,28 +391,25 @@ describe('reducer — permission-resolved', () => {
 
 describe('reducer — interrupt', () => {
   it('resets running/status/streaming on active turn without dropping messages', () => {
-    // Build an active state: streaming text bubble + a system status.
     let state = run([
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } }
-        }
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text' }
+        })
       },
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'working' } }
-        }
+        message: claudeStream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'working' }
+        })
       }
     ])
-    state = reduce(
-      state,
-      { kind: 'sdk', message: { type: 'system', subtype: 'status', status: 'requesting' } },
-      ctx
-    )
+    state = reduce(state, { kind: 'sdk', message: sessionState('running') }, ctx)
 
     assert.equal(state.running, true)
     assert.equal(state.statusLabel, 'Thinking')
@@ -435,17 +442,12 @@ describe('reducer — interrupt', () => {
 })
 
 describe('reducer — load-history action', () => {
-  const history: SdkMessage[] = [
-    { type: 'user', message: { content: 'ciao' } },
-    {
-      type: 'assistant',
-      message: {
-        content: [
-          { type: 'text', text: 'ok' },
-          { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/f' } }
-        ]
-      }
-    }
+  const history: NormalizedMessage[] = [
+    userMsg([textBlock('ciao')]),
+    assistantMsg([
+      textBlock('ok'),
+      nativeToolUse('Read', 'fs.read', 'tu1', { file_path: '/f' })
+    ])
   ]
 
   it('produces the same state as a direct loadHistory() call', () => {
@@ -462,24 +464,23 @@ describe('reducer — load-history action', () => {
     const dirty = run([
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_start', index: 0, content_block: { type: 'text' } }
-        }
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text' }
+        })
       },
       {
         kind: 'sdk',
-        message: {
-          type: 'stream_event',
-          event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streaming' } }
-        }
+        message: claudeStream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'streaming' }
+        })
       },
       {
         kind: 'sdk',
-        message: {
-          type: 'assistant',
-          message: { content: [{ type: 'tool_use', id: 't1', name: 'TaskCreate', input: { subject: 'A' } }] }
-        }
+        message: assistantMsg([mcpToolUse('TaskCreate', 't1', { subject: 'A' })])
       }
     ])
 
@@ -502,5 +503,115 @@ describe('reducer — load-history action', () => {
     assert.equal(reset.sessionId, SID)
     assert.equal(reset.messages.length, 3)
     assert.equal(reset.messages[0]!.content, 'ciao')
+  })
+})
+
+describe('reducer — non-Claude partial_event payloads', () => {
+  it('preserves state for partial_event payloads we cannot decode', () => {
+    const before = createInitialState(SID)
+    const after = reduce(
+      before,
+      { kind: 'sdk', message: { kind: 'partial_event', raw: { provider: 'codex', kind: 'token', text: 'hi' } } },
+      ctx
+    )
+    assert.deepEqual(after, before)
+  })
+})
+
+describe('reducer — agent-error', () => {
+  it('appends an error result card and clears running flag and streaming bookkeeping', () => {
+    let state = createInitialState(SID)
+    state = { ...state, running: true, currentAssistantId: 'assistant-x' }
+    state = reduce(state, { kind: 'agent-error', error: 'boom' }, ctx)
+    assert.equal(state.running, false)
+    assert.deepEqual(state.streamingBlocks, {})
+    assert.equal(state.currentAssistantId, null)
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'result')
+    assert.equal(state.messages[0]!.content, 'Error: boom')
+  })
+})
+
+describe('reducer — turn-started dedup', () => {
+  it('flips running:true without re-appending a duplicate user bubble', () => {
+    let state = reduce(createInitialState(SID), { kind: 'user-prompt', text: 'hi' }, ctx)
+    const before = state.messages.length
+    state = { ...state, running: false }
+    state = reduce(state, { kind: 'turn-started', text: 'hi' }, ctx)
+    assert.equal(state.running, true)
+    assert.equal(state.messages.length, before, 'no duplicate bubble appended')
+  })
+
+  it('appends a user bubble when no matching local prompt exists', () => {
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'turn-started', text: 'remote prompt' },
+      ctx
+    )
+    assert.equal(state.running, true)
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'user')
+    assert.equal(state.messages[0]!.content, 'remote prompt')
+  })
+})
+
+describe('reducer — context-usage', () => {
+  it('appends a context-usage chip carrying the usage payload', () => {
+    const usage = { totalTokens: 100, maxTokens: 200, percentage: 50 }
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'context-usage', usage },
+      ctx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.type, 'context-usage')
+    assert.deepEqual(m.contextUsage, usage)
+  })
+})
+
+describe('reducer — slash-feedback', () => {
+  it('appends a slash-feedback chip with default ok status', () => {
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'slash-feedback', text: 'switched' },
+      ctx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'slash-feedback')
+    assert.equal(state.messages[0]!.feedbackStatus, 'ok')
+    assert.equal(state.messages[0]!.content, 'switched')
+  })
+
+  it('respects an explicit error status', () => {
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'slash-feedback', text: 'failed', status: 'error' },
+      ctx
+    )
+    assert.equal(state.messages[0]!.feedbackStatus, 'error')
+  })
+})
+
+describe('reducer — tool_result error path', () => {
+  it('marks the tool card as errored when isError is true', () => {
+    let state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_err', name: 'Bash' }
+        })
+      }
+    ])
+    state = reduce(
+      state,
+      { kind: 'sdk', message: userMsg([toolResult('tu_err', true, 'denied')]) },
+      ctx
+    )
+    const tool = state.messages.find((m) => m.id === 'tu_err')!
+    assert.equal(tool.toolStatus, 'error')
+    assert.equal(tool.streaming, false)
   })
 })

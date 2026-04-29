@@ -1,14 +1,14 @@
-import { isCliMarkerOnly, isTaskTool, parseSlashEnvelope } from './helpers.js'
+import { isCliMarkerOnly, isJackTaskTool, parseSlashEnvelope } from './helpers.js'
+import {
+  isClaudeStreamEvent,
+  type ClaudeStreamEvent
+} from './internal/claude-stream.js'
+import type { NormalizedBlock, NormalizedMessage } from './normalized.js'
 import { applyTaskTool } from './task-list.js'
 import type {
   AgentEvent,
-  AnthropicContentBlock,
-  AnthropicStreamEvent,
-  AnthropicToolResultBlock,
-  AnthropicToolUseBlock,
   ChatMessage,
   ChatState,
-  SdkMessage,
   StreamingBlockEntry
 } from './types.js'
 
@@ -227,17 +227,17 @@ export function reduce(
 
 function applySdkMessage(
   state: ChatState,
-  message: SdkMessage,
+  message: NormalizedMessage,
   ctx: ReduceContext
 ): ChatState {
-  switch (message.type) {
-    case 'stream_event':
-      return applyStreamEvent(state, message.event, ctx)
+  switch (message.kind) {
+    case 'partial_event':
+      return applyPartialEvent(state, message.raw, ctx)
     case 'assistant':
-      return applyAssistantFinal(state, message.message?.content ?? [], ctx)
+      return applyAssistantFinal(state, message.blocks, ctx)
     case 'user':
-      return applyUserMessage(state, message.message?.content, ctx)
-    case 'result': {
+      return applyUserMessage(state, message.blocks, ctx)
+    case 'turn_result': {
       const next: ChatState = {
         ...state,
         running: false,
@@ -248,9 +248,14 @@ function applySdkMessage(
           ? state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m))
           : state.messages
       }
-      const subtype = message.subtype ?? 'unknown'
-      if (subtype === 'success') return next
+      if (message.success) return next
       const { state: s2, id } = bumpId(next)
+      const errorContent =
+        message.errorMessage === 'error_max_turns'
+          ? 'Reached max turns'
+          : message.errorMessage
+            ? `Error: ${message.errorMessage}`
+            : 'Error: unknown'
       return {
         ...s2,
         messages: [
@@ -258,33 +263,49 @@ function applySdkMessage(
           {
             id,
             type: 'result',
-            content:
-              subtype === 'error_max_turns' ? 'Reached max turns' : `Error: ${subtype}`,
+            content: errorContent,
             timestamp: ctx.now()
           }
         ]
       }
     }
-    case 'system': {
-      if (message.subtype !== 'status') return state
-      const s = message.status
+    case 'session_state': {
+      // `requires_action` is the "waiting on a permission decision" hint —
+      // the pending-permission card already covers the UI signal, so no
+      // status label is added here. `Compacting` as a label is currently
+      // unreachable through normalized state (see the TODO in normalized.ts);
+      // it stays in `StatusLabel` for binary compatibility until a follow-up
+      // contract update introduces a dedicated kind/state for it.
       return {
         ...state,
-        statusLabel:
-          s === 'requesting' ? 'Thinking' : s === 'compacting' ? 'Compacting' : null
+        statusLabel: message.state === 'running' ? 'Thinking' : null
       }
     }
-    default:
-      // Unknown SDK message types forwarded from the server — preserve state
-      // rather than fall through and return `undefined` (which would crash the
-      // next dispatch with `Cannot read property X of undefined`).
+    case 'session_init':
+    case 'rate_limit':
+    case 'task_event':
+    case 'unknown':
+      // Not consumed by the chat reducer today — preserve state rather than
+      // fall through and return `undefined`.
       return state
   }
 }
 
+function applyPartialEvent(
+  state: ChatState,
+  raw: unknown,
+  ctx: ReduceContext
+): ChatState {
+  // Today only Claude emits token-level streaming. Other providers ship
+  // `partial_event` with their own raw shape, which the reducer cannot yet
+  // decode — drop silently until a normalized partial-block event lands.
+  if (!isClaudeStreamEvent(raw)) return state
+  return applyStreamEvent(state, raw.event, ctx)
+}
+
 function applyStreamEvent(
   state: ChatState,
-  event: AnthropicStreamEvent | undefined,
+  event: ClaudeStreamEvent | undefined,
   ctx: ReduceContext
 ): ChatState {
   if (!event) return state
@@ -330,8 +351,11 @@ function applyStreamEvent(
         }
 
         // Aggregated Task tools: no placeholder card, the task-list widget is
-        // updated when the final 'assistant' message arrives.
-        if (isTaskTool(name)) {
+        // updated when the final 'assistant' message arrives. The streaming
+        // event only carries the wire name (e.g. `mcp__jack__TaskCreate`),
+        // so we do prefix-aware matching here without going through a full
+        // NormalizedToolRef parse.
+        if (isTaskWireName(name)) {
           return {
             ...state,
             messages,
@@ -419,22 +443,21 @@ function applyStreamEvent(
 
 function applyAssistantFinal(
   state: ChatState,
-  blocks: AnthropicContentBlock[],
+  blocks: NormalizedBlock[],
   ctx: ReduceContext
 ): ChatState {
   let next = state
   for (const block of blocks) {
     if (block.type !== 'tool_use') continue
-    const toolBlock = block as AnthropicToolUseBlock
-    if (!toolBlock.id) continue
+    if (!block.toolUseId) continue
 
-    if (isTaskTool(toolBlock.name)) {
+    if (isJackTaskTool(block.toolRef)) {
       const sessionId = next.sessionId ?? 'global'
       const result = applyTaskTool(
         next.messages,
         sessionId,
-        toolBlock.name,
-        toolBlock.input,
+        block.toolRef.toolName,
+        toRecord(block.input),
         next.taskCounter,
         ctx.now()
       )
@@ -445,12 +468,12 @@ function applyAssistantFinal(
     next = {
       ...next,
       messages: next.messages.map((m) =>
-        m.id === toolBlock.id
+        m.id === block.toolUseId
           ? {
               ...m,
               toolStatus: 'done' as const,
               streaming: false,
-              toolInput: toolBlock.input
+              toolInput: toRecord(block.input)
             }
           : m
       )
@@ -461,31 +484,25 @@ function applyAssistantFinal(
 
 function applyUserMessage(
   state: ChatState,
-  content: string | AnthropicContentBlock[] | undefined,
+  blocks: NormalizedBlock[],
   ctx: ReduceContext
 ): ChatState {
-  if (content === undefined) return state
-
   let next = state
   const textBlobs: string[] = []
 
-  if (typeof content === 'string') {
-    textBlobs.push(content)
-  } else if (Array.isArray(content)) {
-    for (const c of content) {
-      if (c.type === 'tool_result' && (c as AnthropicToolResultBlock).tool_use_id) {
-        const toolResult = c as AnthropicToolResultBlock
-        const targetId = toolResult.tool_use_id
-        const nextStatus: 'error' | 'done' = toolResult.is_error ? 'error' : 'done'
-        next = {
-          ...next,
-          messages: next.messages.map((m) =>
-            m.id === targetId ? { ...m, toolStatus: nextStatus, streaming: false } : m
-          )
-        }
-      } else if (c.type === 'text' && typeof c.text === 'string') {
-        textBlobs.push(c.text)
+  for (const block of blocks) {
+    if (block.type === 'tool_result') {
+      const targetId = block.toolUseId
+      if (!targetId) continue
+      const nextStatus: 'error' | 'done' = block.isError ? 'error' : 'done'
+      next = {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.id === targetId ? { ...m, toolStatus: nextStatus, streaming: false } : m
+        )
       }
+    } else if (block.type === 'text' && typeof block.text === 'string') {
+      textBlobs.push(block.text)
     }
   }
 
@@ -616,37 +633,48 @@ function appendDelta(
   }
 }
 
+function toRecord(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== 'object') return undefined
+  return input as Record<string, unknown>
+}
+
+const TASK_WIRE_NAMES: ReadonlySet<string> = new Set([
+  'mcp__jack__TaskCreate',
+  'mcp__jack__TaskUpdate',
+  'mcp__jack__TaskList',
+  'mcp__jack__TaskGet'
+])
+
+function isTaskWireName(name?: string): boolean {
+  return !!name && TASK_WIRE_NAMES.has(name)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // History replay
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Rebuild a `ChatMessage[]` from a recorded Claude Code JSONL transcript.
- * Unlike `reduce`, this operates on finalised turns (no streaming deltas),
- * so the logic is a flat iteration rather than delta accumulation.
+ * Rebuild a `ChatMessage[]` from a recorded transcript expressed as
+ * provider-neutral `NormalizedMessage[]`. Unlike `reduce`, this operates on
+ * finalised turns (no streaming deltas), so the logic is a flat iteration
+ * rather than delta accumulation.
  *
  * Internal counters are exposed on the returned state so the caller can keep
  * consuming live events without id collisions.
  */
 export function loadHistory(
-  rawMessages: SdkMessage[],
+  rawMessages: NormalizedMessage[],
   sessionId: string,
   ctx: ReduceContext = defaultCtx
 ): ChatState {
   let state = createInitialState(sessionId)
 
   for (const msg of rawMessages) {
-    if (msg.type === 'user') {
-      const content = msg.message?.content
-      let text = ''
-      if (typeof content === 'string') {
-        text = content
-      } else if (Array.isArray(content)) {
-        text = content
-          .filter((b): b is AnthropicContentBlock & { type: 'text'; text: string } => b.type === 'text')
-          .map((b) => b.text)
-          .join('\n')
-      }
+    if (msg.kind === 'user') {
+      const text = msg.blocks
+        .filter((b): b is NormalizedBlock & { type: 'text' } => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n')
       if (!text) continue
 
       const envelope = parseSlashEnvelope(text)
@@ -679,19 +707,17 @@ export function loadHistory(
       continue
     }
 
-    if (msg.type === 'assistant') {
-      const blocks: AnthropicContentBlock[] = Array.isArray(msg.message?.content)
-        ? (msg.message!.content as AnthropicContentBlock[])
-        : []
+    if (msg.kind === 'assistant') {
+      const blocks = msg.blocks
       const texts = blocks
-        .filter((b): b is AnthropicContentBlock & { type: 'text'; text: string } => b.type === 'text')
+        .filter((b): b is NormalizedBlock & { type: 'text' } => b.type === 'text')
         .map((b) => b.text)
         .join('\n')
       const thinkingTexts = blocks
         .filter(
-          (b): b is AnthropicContentBlock & { type: 'thinking'; thinking: string } => b.type === 'thinking'
+          (b): b is NormalizedBlock & { type: 'thinking' } => b.type === 'thinking'
         )
-        .map((b) => b.thinking)
+        .map((b) => b.text)
         .join('\n')
 
       if (texts || thinkingTexts) {
@@ -713,14 +739,13 @@ export function loadHistory(
 
       for (const block of blocks) {
         if (block.type !== 'tool_use') continue
-        const toolBlock = block as AnthropicToolUseBlock
 
-        if (isTaskTool(toolBlock.name)) {
+        if (isJackTaskTool(block.toolRef)) {
           const result = applyTaskTool(
             state.messages,
             sessionId,
-            toolBlock.name,
-            toolBlock.input,
+            block.toolRef.toolName,
+            toRecord(block.input),
             state.taskCounter,
             ctx.now()
           )
@@ -729,7 +754,9 @@ export function loadHistory(
         }
 
         const { state: s2, id: fallbackId } = bumpId(state)
-        const id = toolBlock.id ?? fallbackId
+        const id = block.toolUseId || fallbackId
+        const toolName =
+          block.toolRef.kind === 'native' ? block.toolRef.toolName : block.toolRef.raw
         state = {
           ...s2,
           messages: [
@@ -738,8 +765,8 @@ export function loadHistory(
               id,
               type: 'tool',
               content: '',
-              toolName: toolBlock.name,
-              toolInput: toolBlock.input,
+              toolName,
+              toolInput: toRecord(block.input),
               toolStatus: 'done',
               timestamp: 0
             }

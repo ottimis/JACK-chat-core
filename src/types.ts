@@ -1,3 +1,4 @@
+import type { NormalizedMessage } from './normalized.js'
 import type {
   ContextUsageInfo,
   FileChangeData,
@@ -51,8 +52,9 @@ export type ChatMessage = {
 export type StatusLabel = 'Thinking' | 'Compacting' | null
 
 /**
- * Block currently receiving streaming deltas. Keyed by the Anthropic
- * `content_block_start.index` so subsequent deltas find their target.
+ * Block currently receiving streaming deltas. Keyed by the provider's
+ * `content_block_start.index` (Claude — see internal/claude-stream.ts) so
+ * subsequent deltas find their target.
  */
 export type StreamingBlockEntry = {
   id: string
@@ -85,80 +87,11 @@ export type ParsedSlashEnvelope = {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Anthropic SDK message shapes (partial — only what the reducer reads)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type AnthropicTextBlock = { type: 'text'; text: string }
-export type AnthropicThinkingBlock = { type: 'thinking'; thinking: string }
-export type AnthropicToolUseBlock = {
-  type: 'tool_use'
-  id: string
-  name: string
-  input?: Record<string, unknown>
-}
-export type AnthropicToolResultBlock = {
-  type: 'tool_result'
-  tool_use_id: string
-  is_error?: boolean
-  content?: unknown
-}
-export type AnthropicContentBlock =
-  | AnthropicTextBlock
-  | AnthropicThinkingBlock
-  | AnthropicToolUseBlock
-  | AnthropicToolResultBlock
-
-export type StreamEventDelta =
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; thinking: string }
-  | { type: 'input_json_delta'; partial_json: string }
-
-export type AnthropicStreamEvent =
-  | {
-      type: 'content_block_start'
-      index: number
-      content_block?: Partial<AnthropicContentBlock> & { type?: string; id?: string; name?: string }
-    }
-  | { type: 'content_block_delta'; index: number; delta?: StreamEventDelta }
-  | { type: 'content_block_stop'; index: number }
-  | { type: 'message_stop' }
-
-export type SdkMessage =
-  | {
-      type: 'stream_event'
-      event: AnthropicStreamEvent
-    }
-  | {
-      type: 'assistant'
-      message?: { content?: AnthropicContentBlock[] }
-    }
-  | {
-      type: 'user'
-      message?: { content?: string | AnthropicContentBlock[] }
-    }
-  | {
-      type: 'result'
-      subtype?: 'success' | 'error_max_turns' | string
-    }
-  | {
-      type: 'system'
-      subtype?: 'status' | string
-      status?: 'requesting' | 'compacting' | null
-    }
-
-/**
- * History rows as produced by `window.api.agentGetMessages` (replay of the
- * Claude Code JSONL transcript). Shape mirrors the stored SDK events, so
- * `loadHistory` accepts the same `SdkMessage` union above.
- */
-export type HistorySdkMessage = SdkMessage
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Reducer actions
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type AgentEvent =
-  | { kind: 'sdk'; message: SdkMessage }
+  | { kind: 'sdk'; message: NormalizedMessage }
   | { kind: 'permission-request'; data: PermissionRequestData }
   | { kind: 'file-change'; data: FileChangeData }
   | { kind: 'agent-error'; error: string }
@@ -171,7 +104,7 @@ export type AgentEvent =
    * IPC or mobile HTTP) so that passive observers (e.g. a mobile app
    * watching a desktop-driven session) can render the prompt bubble and
    * flip `running: true` immediately, without having to wait for the
-   * first `stream_event` to trickle in.
+   * first `partial_event` to trickle in.
    *
    * The reducer de-duplicates against the most recent user message in
    * state so a client that already dispatched `user-prompt` locally
@@ -180,7 +113,7 @@ export type AgentEvent =
    */
   | { kind: 'turn-started'; text: string }
   | { kind: 'reset'; sessionId?: string | null }
-  | { kind: 'load-history'; rawMessages: SdkMessage[]; sessionId: string }
+  | { kind: 'load-history'; rawMessages: NormalizedMessage[]; sessionId: string }
   | { kind: 'slash-invocation'; name: string; args?: string }
   | { kind: 'permission-resolved'; toolUseID: string; decision: 'allow' | 'always_allow' | 'deny' }
   | { kind: 'interrupt' }
