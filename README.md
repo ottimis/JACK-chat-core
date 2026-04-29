@@ -4,10 +4,10 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 
 ## What this package contains
 
-- **Types** — `ChatMessage`, `ChatState`, `TaskItem`, the provider-neutral message contract (`NormalizedMessage`, `NormalizedBlock`, `NormalizedToolRef`, `ToolShape`, …), plus the preload-level contracts (`FileChangeData`, `PermissionRequestData`, `ContextUsageInfo`, `ClaudeCommandDef`).
-- **Pure helpers** — `parseSlashEnvelope`, `isCliMarkerOnly`, `expandCommandBody`, `isJackTaskTool`, `isTaskTool` (deprecated).
-- **Reducer** — `createInitialState()` + `reduce(state, event)` that consumes provider-neutral `NormalizedMessage`s plus out-of-band events (permission, file change, error) and produces the list of message bubbles the UI renders.
-- **History loader** — `loadHistory(rawMessages)` that replays a transcript expressed as `NormalizedMessage[]` into a starting `ChatMessage[]`.
+- **Types** — `ChatMessage`, `ChatState`, `TaskItem`, the provider-neutral message contract (`NormalizedMessage`, `NormalizedBlock`, `NormalizedToolRef`, `ToolShape`, …), plus the preload-level contracts (`FileChangeData`, `PermissionRequestData`, `ContextUsageInfo`, `SlashCommandDef`).
+- **Pure helpers** — `isJackTaskTool`, `isTaskTool` (deprecated), `pickStr`. Slash-command parsing is no longer in this package — see `ReduceContext.parseSlashEnvelope` / `ReduceContext.isCliMarkerOnly` callbacks for the provider injection point.
+- **Reducer** — `createInitialState()` + `reduce(state, event, ctx?)` that consumes provider-neutral `NormalizedMessage`s plus out-of-band events (permission, file change, error) and produces the list of message bubbles the UI renders. `ctx` carries the host clock and optional provider-specific text parsers.
+- **History loader** — `loadHistory(rawMessages, sessionId, ctx?)` that replays a transcript expressed as `NormalizedMessage[]` into a starting `ChatMessage[]`. Slash envelope detection and CLI-marker filtering happen only when the matching ctx callbacks are injected.
 
 ### `AgentEvent` actions
 
@@ -26,6 +26,25 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 | `slash-invocation`    | client  | User invoked a slash command (built-in or unknown), append chip         |
 | `permission-resolved` | client  | User decided an inline permission: deny removes card, allow marks streaming |
 | `interrupt`           | client  | User stopped the turn — reset runtime flags, keep messages              |
+
+## 0.5.0
+
+**Breaking**: `parseSlashEnvelope`, `isCliMarkerOnly`, `expandCommandBody`, and `SLASH_ENVELOPE_START` are no longer exported. The reducer's slash-command envelope detection is now optional and provider-driven via two new `ReduceContext` callbacks:
+
+- `parseSlashEnvelope?: (text: string) => ParsedSlashEnvelope | null`
+- `isCliMarkerOnly?: (text: string) => boolean`
+
+Hosts targeting Claude must inject those callbacks at runtime; hosts targeting providers without a slash convention (Codex, Gemini, …) omit them and the reducer renders user messages without slash chip detection or marker filtering.
+
+**Renamed (with deprecated alias)**: `ClaudeCommandDef` → `SlashCommandDef`. The old name remains as a `@deprecated` alias and will be removed in 0.6.0.
+
+**Reasoning**: chat-core is provider-neutral; Claude-specific text parsing belongs in the provider package, not in the rendering layer. This change unblocks the multi-provider integration on the host side.
+
+**Migration**:
+
+- Hosts that consume Claude: re-implement `parseSlashEnvelope` / `isCliMarkerOnly` in your provider layer (the previous logic is ~30 lines, see Jack's `providers/claude/slashCommands.ts`) and pass them via `ReduceContext`.
+- Type imports: replace `ClaudeCommandDef` with `SlashCommandDef`.
+- `expandCommandBody`: re-implement in the host slash-command executor; the body-expansion logic is host-specific anyway.
 
 ## 0.4.1
 

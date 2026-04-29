@@ -13,12 +13,8 @@ export type {
 } from './normalized.js'
 export {
   TASK_TOOLS,
-  SLASH_ENVELOPE_START,
-  expandCommandBody,
-  isCliMarkerOnly,
   isJackTaskTool,
   isTaskTool,
-  parseSlashEnvelope,
   pickStr
 } from './helpers.js'
 export { applyTaskTool } from './task-list.js'

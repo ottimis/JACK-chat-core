@@ -1,4 +1,4 @@
-import { isCliMarkerOnly, isJackTaskTool, parseSlashEnvelope } from './helpers.js'
+import { isJackTaskTool } from './helpers.js'
 import {
   isClaudeStreamEvent,
   type ClaudeStreamEvent
@@ -14,6 +14,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatState,
+  ParsedSlashEnvelope,
   StreamingBlockEntry
 } from './types.js'
 
@@ -36,12 +37,35 @@ export function createInitialState(sessionId: string | null = null): ChatState {
 }
 
 /**
- * Host-provided clock. Tests override this; production uses `Date.now`.
+ * Host-provided clock and (optional) provider-specific text parsers.
  * Injected through the reducer's second argument so the reducer itself
- * remains a pure function of `(state, event, ctx)`.
+ * remains a pure function of `(state, event, ctx)` and stays
+ * provider-agnostic — slash-command and CLI-marker conventions live in
+ * the active provider package, not here.
  */
 export type ReduceContext = {
+  /** Host-provided clock. Tests override this; production uses `Date.now`. */
   now: () => number
+  /**
+   * Optional parser for the active provider's slash-command envelope in
+   * user messages (Claude wraps slash commands in `<command-name>` /
+   * `<command-args>` / `<local-command-stdout>` tags inside the JSONL
+   * transcript). Return null when the text doesn't match the provider's
+   * envelope — the reducer renders the message as a normal user bubble.
+   *
+   * Providers without a slash convention (Codex, Gemini, …) simply omit
+   * this callback and the reducer skips envelope detection entirely.
+   */
+  parseSlashEnvelope?: (text: string) => ParsedSlashEnvelope | null
+  /**
+   * Optional check for "this user message is only CLI markers, no real
+   * content" — used by `loadHistory` to drop noise from the transcript
+   * (e.g. Claude's `<local-command-stdout>...</local-command-stdout>`
+   * blobs that show up between turns). Return true to drop the message.
+   * Omitting the callback means "never drop" (the message renders as a
+   * normal user bubble).
+   */
+  isCliMarkerOnly?: (text: string) => boolean
 }
 
 const defaultCtx: ReduceContext = { now: () => Date.now() }
@@ -515,7 +539,7 @@ function applyUserMessage(
   }
 
   for (const text of textBlobs) {
-    const envelope = parseSlashEnvelope(text)
+    const envelope = ctx.parseSlashEnvelope?.(text)
     if (envelope) {
       const { state: s2, id } = bumpId(next)
       next = {
@@ -705,7 +729,7 @@ export function loadHistory(
         .join('\n')
       if (!text) continue
 
-      const envelope = parseSlashEnvelope(text)
+      const envelope = ctx.parseSlashEnvelope?.(text)
       if (envelope) {
         const { state: s2, id } = bumpId(state)
         state = {
@@ -725,7 +749,7 @@ export function loadHistory(
             }
           ]
         }
-      } else if (!isCliMarkerOnly(text)) {
+      } else if (!ctx.isCliMarkerOnly?.(text)) {
         const { state: s2, id } = bumpId(state)
         state = {
           ...s2,

@@ -1,66 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  expandCommandBody,
-  isCliMarkerOnly,
-  isTaskTool,
-  parseSlashEnvelope
-} from '../src/helpers.js'
+import { isTaskTool, isJackTaskTool } from '../src/helpers.js'
+import type { NormalizedToolRef } from '../src/normalized.js'
 
-describe('parseSlashEnvelope', () => {
-  it('parses a well-formed envelope with args and stdout', () => {
-    const text =
-      '<command-name>model</command-name>\n<command-args>sonnet</command-args>\n<local-command-stdout>switched\n</local-command-stdout>'
-    const parsed = parseSlashEnvelope(text)
-    assert.deepEqual(parsed, {
-      commandName: 'model',
-      commandArgs: 'sonnet',
-      commandStdout: 'switched\n'
-    })
-  })
-
-  it('parses a name-only envelope', () => {
-    const parsed = parseSlashEnvelope('<command-name>clear</command-name>')
-    assert.deepEqual(parsed, {
-      commandName: 'clear',
-      commandArgs: undefined,
-      commandStdout: undefined
-    })
-  })
-
-  it('returns null when the text is not an envelope', () => {
-    assert.equal(parseSlashEnvelope('hello world'), null)
-    assert.equal(parseSlashEnvelope(''), null)
-  })
-
-  it('tolerates leading whitespace', () => {
-    const parsed = parseSlashEnvelope('   \n<command-name>help</command-name>')
-    assert.equal(parsed?.commandName, 'help')
-  })
-
-  it('returns null when command name is empty', () => {
-    assert.equal(parseSlashEnvelope('<command-name></command-name>'), null)
-  })
-})
-
-describe('isCliMarkerOnly', () => {
-  it('returns true when text is only envelope markers', () => {
-    const text =
-      '<command-name>clear</command-name><command-args></command-args><local-command-stdout>ok</local-command-stdout>'
-    assert.equal(isCliMarkerOnly(text), true)
-  })
-
-  it('returns false when there is real user text alongside markers', () => {
-    const text = '<command-name>ping</command-name>hello'
-    assert.equal(isCliMarkerOnly(text), false)
-  })
-
-  it('returns false for ordinary prompts', () => {
-    assert.equal(isCliMarkerOnly('please refactor the chat store'), false)
-  })
-})
-
-describe('isTaskTool', () => {
+describe('isTaskTool (deprecated)', () => {
   it('recognises task-family tools', () => {
     for (const name of ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']) {
       assert.equal(isTaskTool(name), true, `expected ${name} to be task tool`)
@@ -74,25 +17,30 @@ describe('isTaskTool', () => {
   })
 })
 
-describe('expandCommandBody', () => {
-  const def = {
-    name: 'demo',
-    scope: 'user' as const,
-    body: 'first=$1 all=$ARGUMENTS',
-    filePath: '/tmp/demo.md'
+describe('isJackTaskTool', () => {
+  function ref(kind: 'native' | 'mcp', name: string, slug = 'jack'): NormalizedToolRef {
+    if (kind === 'native') {
+      return { kind: 'native', toolName: name, shape: 'unknown', raw: name }
+    }
+    return { kind: 'mcp', serverSlug: slug, toolName: name, raw: `mcp__${slug}__${name}` }
   }
 
-  it('substitutes positional and $ARGUMENTS', () => {
-    assert.equal(expandCommandBody(def, 'one two three'), 'first=one all=one two three')
+  it('matches mcp__jack__Task* tools', () => {
+    assert.equal(isJackTaskTool(ref('mcp', 'TaskCreate')), true)
+    assert.equal(isJackTaskTool(ref('mcp', 'TaskUpdate')), true)
+    assert.equal(isJackTaskTool(ref('mcp', 'TaskList')), true)
+    assert.equal(isJackTaskTool(ref('mcp', 'TaskGet')), true)
   })
 
-  it('handles empty args', () => {
-    assert.equal(expandCommandBody(def, ''), 'first= all=')
+  it('rejects mcp tools from other servers even if the name matches', () => {
+    assert.equal(isJackTaskTool(ref('mcp', 'TaskCreate', 'other')), false)
   })
 
-  it('substitutes $N before $ARGUMENTS so literal $1 in args survives', () => {
-    const def2 = { ...def, body: '$1 | $ARGUMENTS' }
-    // raw arg "$1 foo" should expand: $1 → "$1", $ARGUMENTS → "$1 foo"
-    assert.equal(expandCommandBody(def2, '$1 foo'), '$1 | $1 foo')
+  it('rejects native tools that happen to share a name', () => {
+    assert.equal(isJackTaskTool(ref('native', 'TaskCreate')), false)
+  })
+
+  it('rejects unrelated mcp tools', () => {
+    assert.equal(isJackTaskTool(ref('mcp', 'authenticate', 'figma')), false)
   })
 })

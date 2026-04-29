@@ -54,7 +54,14 @@ export type ContextUsageInfo = {
   [k: string]: unknown
 }
 
-export type ClaudeCommandDef = {
+/**
+ * Provider-neutral slash-command definition. Different providers source
+ * these differently (Claude scans `~/.claude/commands/`; Codex would scan
+ * `~/.codex/prompts/`); the shape is the same once parsed. The host
+ * loads them via the active provider's slash-commands module and feeds
+ * them into the renderer's autocomplete + dispatch.
+ */
+export type SlashCommandDef = {
   name: string
   scope: 'user' | 'project' | 'builtin'
   description?: string
@@ -62,3 +69,6 @@ export type ClaudeCommandDef = {
   body: string
   filePath: string
 }
+
+/** @deprecated Use {@link SlashCommandDef}. Will be removed in 0.6.0. */
+export type ClaudeCommandDef = SlashCommandDef

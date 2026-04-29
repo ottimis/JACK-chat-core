@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { createInitialState, reduce, loadHistory } from '../src/reducer.js'
-import type { AgentEvent } from '../src/types.js'
+import type { ReduceContext } from '../src/reducer.js'
+import type { AgentEvent, ParsedSlashEnvelope } from '../src/types.js'
 import type { NormalizedMessage } from '../src/normalized.js'
 import {
   assistantMsg,
@@ -18,11 +19,50 @@ import {
 } from './helpers/fixtures.js'
 
 const SID = 'session-1'
-const ctx = { now: () => 1_000_000 }
 
-function run(events: AgentEvent[]) {
+// Inline reimpl of the Claude slash-envelope parsers — historically lived
+// in `src/helpers.ts` but moved out of chat-core in 0.5.0 (the reducer is
+// provider-neutral). These mock the same shape the host's provider package
+// will inject via ReduceContext at runtime, so the tests still cover
+// envelope detection without reintroducing the removed exports.
+function claudeParseEnvelope(text: string): ParsedSlashEnvelope | null {
+  if (!text.trimStart().startsWith('<command-name>')) return null
+  const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(text)
+  if (!name || !name[1]) return null
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)
+  const stdout = /<local-command-stdout>([\s\S]*?)<\/local-command-stdout>/.exec(text)
+  const commandName = name[1].trim()
+  if (!commandName) return null
+  return {
+    commandName,
+    commandArgs: args && args[1] ? args[1].trim() : undefined,
+    commandStdout: stdout && stdout[1] ? stdout[1] : undefined
+  }
+}
+
+const CLI_MARKER_PATTERNS: readonly RegExp[] = [
+  /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g,
+  /<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g,
+  /<command-name>[\s\S]*?<\/command-name>/g,
+  /<command-args>[\s\S]*?<\/command-args>/g,
+  /<command-message>[\s\S]*?<\/command-message>/g
+]
+function claudeIsCliMarkerOnly(text: string): boolean {
+  let stripped = text
+  for (const pattern of CLI_MARKER_PATTERNS) stripped = stripped.replace(pattern, '')
+  return stripped.trim().length === 0
+}
+
+const ctx: ReduceContext = { now: () => 1_000_000 }
+const slashCtx: ReduceContext = {
+  now: () => 1_000_000,
+  parseSlashEnvelope: claudeParseEnvelope,
+  isCliMarkerOnly: claudeIsCliMarkerOnly
+}
+
+function run(events: AgentEvent[], runCtx: ReduceContext = ctx) {
   let state = createInitialState(SID)
-  for (const ev of events) state = reduce(state, ev, ctx)
+  for (const ev of events) state = reduce(state, ev, runCtx)
   return state
 }
 
@@ -206,22 +246,49 @@ describe('reducer — task tools', () => {
 })
 
 describe('reducer — slash commands and CLI markers', () => {
-  it('renders a slash-command chip for envelope-shaped user messages', () => {
-    const state = run([
-      { kind: 'sdk', message: userMsg([textBlock('<command-name>clear</command-name>')]) }
-    ])
+  it('renders a slash-command chip for envelope-shaped user messages (with ctx parser)', () => {
+    const state = run(
+      [{ kind: 'sdk', message: userMsg([textBlock('<command-name>clear</command-name>')]) }],
+      slashCtx
+    )
     assert.equal(state.messages.length, 1)
     const m = state.messages[0]!
     assert.equal(m.type, 'slash-command')
     assert.equal(m.commandName, 'clear')
   })
 
-  it('ignores text-only user messages that are pure CLI markers in history', () => {
+  it('emits no slash chip for envelope-shaped user blocks when no ctx parser is injected', () => {
+    // With chat-core 0.5.0 the reducer is provider-agnostic: hosts
+    // targeting Codex/Gemini omit the `parseSlashEnvelope` callback and
+    // the reducer skips slash detection entirely. `applyUserMessage`
+    // only emits chips on envelope match — plain user text from a `user`
+    // SDK message (typically a tool_result echo) doesn't surface as a
+    // chat bubble at all (live user prompts come through `user-prompt`).
+    const state = run([
+      { kind: 'sdk', message: userMsg([textBlock('<command-name>clear</command-name>')]) }
+    ])
+    assert.equal(state.messages.length, 0)
+  })
+
+  it('ignores text-only user messages that are pure CLI markers in history (with ctx isCliMarkerOnly)', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('<local-command-stdout>ok</local-command-stdout>')])
+    ]
+    const state = loadHistory(history, SID, slashCtx)
+    assert.equal(state.messages.length, 0)
+  })
+
+  it('keeps marker-only history messages as plain user bubbles when no ctx isCliMarkerOnly is injected', () => {
     const history: NormalizedMessage[] = [
       userMsg([textBlock('<local-command-stdout>ok</local-command-stdout>')])
     ]
     const state = loadHistory(history, SID, ctx)
-    assert.equal(state.messages.length, 0)
+    // Without the filter, the reducer renders the raw text — Codex/Gemini
+    // hosts that don't have CLI markers won't hit this case in practice;
+    // this test pins the documented "no callback ⇒ pass through" semantics.
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'user')
+    assert.equal(state.messages[0]!.content, '<local-command-stdout>ok</local-command-stdout>')
   })
 })
 
