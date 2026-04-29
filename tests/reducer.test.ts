@@ -6,6 +6,7 @@ import type { NormalizedMessage } from '../src/normalized.js'
 import {
   assistantMsg,
   claudeStream,
+  mcpBlock,
   mcpToolUse,
   nativeToolUse,
   sessionState,
@@ -81,6 +82,81 @@ describe('reducer — streaming assistant turn', () => {
     const tool = state.messages.find((m) => m.id === 'tu_1')!
     assert.equal(tool.toolStatus, 'done')
     assert.deepEqual(tool.toolInput, { file_path: '/foo' })
+    assert.equal(tool.toolShape, 'fs.read')
+    assert.equal(tool.toolRefKind, 'native')
+    assert.equal(tool.toolMcpServerSlug, undefined)
+  })
+})
+
+describe('reducer — toolShape projection (0.4.1)', () => {
+  it('populates toolShape and toolRefKind for a known native tool', () => {
+    let state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_w', name: 'Write' }
+        })
+      }
+    ])
+    state = reduce(
+      state,
+      { kind: 'sdk', message: assistantMsg([nativeToolUse('Write', 'fs.write', 'tu_w', { file_path: '/x', content: 'hi' })]) },
+      ctx
+    )
+    const tool = state.messages.find((m) => m.id === 'tu_w')!
+    assert.equal(tool.toolShape, 'fs.write')
+    assert.equal(tool.toolRefKind, 'native')
+    assert.equal(tool.toolMcpServerSlug, undefined)
+    assert.equal(tool.toolName, 'Write')
+  })
+
+  it("preserves shape='unknown' verbatim for native tools without a catalog entry", () => {
+    let state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_u', name: 'CustomTool' }
+        })
+      }
+    ])
+    state = reduce(
+      state,
+      { kind: 'sdk', message: assistantMsg([nativeToolUse('CustomTool', 'unknown', 'tu_u', { foo: 'bar' })]) },
+      ctx
+    )
+    const tool = state.messages.find((m) => m.id === 'tu_u')!
+    assert.equal(tool.toolShape, 'unknown', 'unknown shape kept, not coerced to undefined')
+    assert.equal(tool.toolRefKind, 'native')
+    assert.equal(tool.toolMcpServerSlug, undefined)
+  })
+
+  it('maps MCP tool refs to shape=mcp + carries the server slug', () => {
+    let state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu_m', name: 'mcp__figma__authenticate' }
+        })
+      }
+    ])
+    state = reduce(
+      state,
+      {
+        kind: 'sdk',
+        message: assistantMsg([mcpBlock('figma', 'authenticate', 'tu_m', { token: 'redacted' })])
+      },
+      ctx
+    )
+    const tool = state.messages.find((m) => m.id === 'tu_m')!
+    assert.equal(tool.toolShape, 'mcp')
+    assert.equal(tool.toolRefKind, 'mcp')
+    assert.equal(tool.toolMcpServerSlug, 'figma')
   })
 })
 
@@ -265,6 +341,35 @@ describe('loadHistory', () => {
     assert.equal(state.messages[2]!.id, 'tu1')
     assert.equal(state.messages[2]!.toolName, 'Read')
     assert.deepEqual(state.messages[2]!.toolInput, { file_path: '/f' })
+  })
+
+  it('projects toolShape onto tool cards rebuilt from history (mcp)', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('do figma stuff')]),
+      assistantMsg([
+        textBlock('authenticating'),
+        mcpBlock('figma', 'authenticate', 'tu_h', { token: 't' })
+      ])
+    ]
+    const state = loadHistory(history, SID, ctx)
+    const tool = state.messages.find((m) => m.type === 'tool')!
+    assert.equal(tool.id, 'tu_h')
+    assert.equal(tool.toolShape, 'mcp')
+    assert.equal(tool.toolRefKind, 'mcp')
+    assert.equal(tool.toolMcpServerSlug, 'figma')
+    assert.equal(tool.toolName, 'mcp__figma__authenticate', 'history keeps the wire name as toolName for mcp')
+  })
+
+  it('projects toolShape onto tool cards rebuilt from history (native)', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('read it')]),
+      assistantMsg([nativeToolUse('Read', 'fs.read', 'tu_r', { file_path: '/f' })])
+    ]
+    const state = loadHistory(history, SID, ctx)
+    const tool = state.messages.find((m) => m.type === 'tool')!
+    assert.equal(tool.toolShape, 'fs.read')
+    assert.equal(tool.toolRefKind, 'native')
+    assert.equal(tool.toolMcpServerSlug, undefined)
   })
 
   it('aggregates jack mcp task tools from history into a task-list message', () => {

@@ -3,7 +3,12 @@ import {
   isClaudeStreamEvent,
   type ClaudeStreamEvent
 } from './internal/claude-stream.js'
-import type { NormalizedBlock, NormalizedMessage } from './normalized.js'
+import type {
+  NormalizedBlock,
+  NormalizedMessage,
+  NormalizedToolRef,
+  ToolShape
+} from './normalized.js'
 import { applyTaskTool } from './task-list.js'
 import type {
   AgentEvent,
@@ -465,6 +470,8 @@ function applyAssistantFinal(
       continue
     }
 
+    const ref = block.toolRef
+    const shapeFields = toolShapeFields(ref)
     next = {
       ...next,
       messages: next.messages.map((m) =>
@@ -473,7 +480,8 @@ function applyAssistantFinal(
               ...m,
               toolStatus: 'done' as const,
               streaming: false,
-              toolInput: toRecord(block.input)
+              toolInput: toRecord(block.input),
+              ...shapeFields
             }
           : m
       )
@@ -638,6 +646,26 @@ function toRecord(input: unknown): Record<string, unknown> | undefined {
   return input as Record<string, unknown>
 }
 
+/**
+ * Project a `NormalizedToolRef` onto the trio of fields the renderer keys
+ * off. Native tools carry their `shape` from the provider's tool catalog;
+ * MCP-routed tools always map to `'mcp'` and carry the server slug.
+ *
+ * `'unknown'` shape is preserved verbatim (not coerced to `undefined`) so
+ * the renderer can pick a generic JSON view rather than fall back to
+ * provider-name pattern matching.
+ */
+function toolShapeFields(ref: NormalizedToolRef): {
+  toolShape: ToolShape
+  toolRefKind: 'native' | 'mcp'
+  toolMcpServerSlug?: string
+} {
+  if (ref.kind === 'native') {
+    return { toolShape: ref.shape, toolRefKind: 'native' }
+  }
+  return { toolShape: 'mcp', toolRefKind: 'mcp', toolMcpServerSlug: ref.serverSlug }
+}
+
 const TASK_WIRE_NAMES: ReadonlySet<string> = new Set([
   'mcp__jack__TaskCreate',
   'mcp__jack__TaskUpdate',
@@ -757,6 +785,7 @@ export function loadHistory(
         const id = block.toolUseId || fallbackId
         const toolName =
           block.toolRef.kind === 'native' ? block.toolRef.toolName : block.toolRef.raw
+        const shapeFields = toolShapeFields(block.toolRef)
         state = {
           ...s2,
           messages: [
@@ -768,7 +797,8 @@ export function loadHistory(
               toolName,
               toolInput: toRecord(block.input),
               toolStatus: 'done',
-              timestamp: 0
+              timestamp: 0,
+              ...shapeFields
             }
           ]
         }

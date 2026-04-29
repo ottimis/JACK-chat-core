@@ -27,6 +27,17 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 | `permission-resolved` | client  | User decided an inline permission: deny removes card, allow marks streaming |
 | `interrupt`           | client  | User stopped the turn — reset runtime flags, keep messages              |
 
+## 0.4.1
+
+Additive: `ChatMessage` gains optional `toolShape`, `toolRefKind`, `toolMcpServerSlug` fields. The reducer populates them from `NormalizedBlock.tool_use.toolRef` when the final assistant message arrives (and during history replay). Renderers can switch from `toolName`-keyed card selection to `shape`-keyed dispatch; back-compat preserved since the fields are optional.
+
+- Native tools carry their canonical `shape` from the provider's tool catalog (`'fs.read' | 'fs.write' | …`).
+- MCP-routed tools always map to `toolShape: 'mcp'` and carry `toolMcpServerSlug` so the renderer can show the MCP badge + server slug without re-parsing `toolName`.
+- Streaming-only states (between `content_block_start` and the final assistant message) leave the fields `undefined` — only the wire name is on the wire there. Renderers should fall back to `toolName` matching for that window.
+- `'unknown'` shapes (native tools without a catalog entry) are preserved verbatim, not coerced to `undefined`, so the renderer can pick a generic JSON view rather than fall back to provider-name pattern matching.
+
+No breaking changes — existing 0.4.0 consumers keep compiling.
+
 ## Breaking changes in 0.4.0
 
 - `AgentEvent.kind = 'sdk'` now carries a provider-neutral `NormalizedMessage` instead of an Anthropic-shaped `SdkMessage`. Hosts must translate provider-native streams to `NormalizedMessage` before dispatching; Jack ≥ 1.3 ships a Claude translator at `src/main/providers/claude/normalize.ts`.
