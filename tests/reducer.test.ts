@@ -12,6 +12,7 @@ import {
   nativeToolUse,
   sessionState,
   textBlock,
+  thinkingBlock,
   toolResult,
   turnResultError,
   turnResultSuccess,
@@ -106,6 +107,42 @@ describe('reducer — streaming assistant turn', () => {
     assert.equal(tool.id, 'tu_1')
     assert.equal(tool.toolStatus, 'running')
     assert.equal(state.currentAssistantId, null)
+  })
+
+  it('appends text + thinking from final assistant when provider has no partial streaming', () => {
+    // Codex shape: no `partial_event` flow, the whole turn arrives in a
+    // single `assistant` NormalizedMessage. With the default ctx (Claude
+    // semantics) the reducer would drop those text/thinking blocks; the
+    // `providerHasPartialStreaming: false` flag opts the reducer into
+    // appending them as a new bubble — same shape as `loadHistory`.
+    const noStreamCtx: ReduceContext = {
+      now: () => 1_000_000,
+      providerHasPartialStreaming: false
+    }
+    const state = run(
+      [{ kind: 'sdk', message: assistantMsg([thinkingBlock('let me think'), textBlock('Ciao')]) }],
+      noStreamCtx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.type, 'assistant')
+    assert.equal(m.content, 'Ciao')
+    assert.equal(m.thinking, 'let me think')
+  })
+
+  it('does not double-append text when provider has partial streaming (default)', () => {
+    // With Claude's flow the text already lives in the bubble built from
+    // partial_event deltas; the final `assistant` message must NOT append
+    // a second copy.
+    const state = run([
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'text' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 0 }) },
+      { kind: 'sdk', message: claudeStream({ type: 'message_stop' }) },
+      { kind: 'sdk', message: assistantMsg([textBlock('Hello')]) }
+    ])
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.content, 'Hello')
   })
 
   it('marks tool as done on matching tool_result', () => {

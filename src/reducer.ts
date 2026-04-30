@@ -66,6 +66,20 @@ export type ReduceContext = {
    * normal user bubble).
    */
   isCliMarkerOnly?: (text: string) => boolean
+  /**
+   * Whether the active provider streams assistant content as a sequence of
+   * `partial_event` frames *before* the final `assistant` `NormalizedMessage`
+   * arrives. Defaults to `true` for backwards compatibility (Claude's
+   * behavior since v0.1) — leaving `applyAssistantFinal` to treat text and
+   * thinking blocks on the final message as already-rendered.
+   *
+   * Set to `false` for providers whose `assistant` final is the *first* time
+   * the host sees the content (Codex, Gemini, any non-streaming backend) so
+   * the reducer appends text/thinking blocks as new chat messages instead
+   * of dropping them on the floor. Without this flag a Codex turn never
+   * produces visible chat output until the user reloads via `loadHistory`.
+   */
+  providerHasPartialStreaming?: boolean
 }
 
 const defaultCtx: ReduceContext = { now: () => Date.now() }
@@ -476,6 +490,38 @@ function applyAssistantFinal(
   ctx: ReduceContext
 ): ChatState {
   let next = state
+
+  // Providers without partial streaming deliver text and thinking on the
+  // final assistant message — there's no prior `partial_event` flow to
+  // surface them via `applyStreamEvent`. Mirror what `loadHistory` does for
+  // historical replay so live turns render the same way without a reload.
+  if (ctx.providerHasPartialStreaming === false) {
+    const texts = blocks
+      .filter((b): b is Extract<NormalizedBlock, { type: 'text' }> => b.type === 'text')
+      .map((b) => b.text)
+      .join('\n')
+    const thinking = blocks
+      .filter((b): b is Extract<NormalizedBlock, { type: 'thinking' }> => b.type === 'thinking')
+      .map((b) => b.text)
+      .join('\n')
+    if (texts || thinking) {
+      const { state: s2, id } = bumpId(next)
+      next = {
+        ...s2,
+        messages: [
+          ...s2.messages,
+          {
+            id,
+            type: 'assistant' as const,
+            content: texts,
+            ...(thinking ? { thinking } : {}),
+            timestamp: ctx.now()
+          }
+        ]
+      }
+    }
+  }
+
   for (const block of blocks) {
     if (block.type !== 'tool_use') continue
     if (!block.toolUseId) continue
