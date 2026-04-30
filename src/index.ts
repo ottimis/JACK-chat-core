@@ -13,9 +13,11 @@ export type {
 } from './normalized.js'
 export {
   TASK_TOOLS,
+  applyUserContentPolicy,
   isJackTaskTool,
   isTaskTool,
-  pickStr
+  pickStr,
+  stripWrapperTags
 } from './helpers.js'
 export { applyTaskTool } from './task-list.js'
 export { createInitialState, loadHistory, reduce } from './reducer.js'

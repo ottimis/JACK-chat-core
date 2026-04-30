@@ -1,4 +1,4 @@
-import { isJackTaskTool } from './helpers.js'
+import { applyUserContentPolicy, isJackTaskTool } from './helpers.js'
 import {
   isClaudeStreamEvent,
   type ClaudeStreamEvent
@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   ChatState,
   ParsedSlashEnvelope,
+  ProviderUserContentPolicy,
   StreamingBlockEntry
 } from './types.js'
 
@@ -80,6 +81,24 @@ export type ReduceContext = {
    * produces visible chat output until the user reloads via `loadHistory`.
    */
   providerHasPartialStreaming?: boolean
+  /**
+   * Provider-declared rules for sanitizing user-role text before it lands
+   * in the chat. Today only the wrapper-tag stripping is wired (see
+   * `applyUserContentPolicy` in `helpers.ts`); future expansion (chip
+   * rendering for `infoWrapperTags`) bolts on without breaking the type.
+   *
+   * Applied at two entry points:
+   *   - `applyUserMessage` — the live `kind: 'user'` event from the wire
+   *     (auto-injected boilerplate from the provider, IDE-context blocks,
+   *     etc.). When stripping leaves an empty body, the bubble is dropped.
+   *   - `loadHistory` — the same logic on transcript replay so reload
+   *     parity with the live path is automatic.
+   *
+   * Provider authors declare this policy in their package alongside their
+   * `JackProvider` export; the host wires it into the `ReduceContext` per
+   * session at render time.
+   */
+  userContentPolicy?: ProviderUserContentPolicy
 }
 
 const defaultCtx: ReduceContext = { now: () => Date.now() }
@@ -580,7 +599,13 @@ function applyUserMessage(
         )
       }
     } else if (block.type === 'text' && typeof block.text === 'string') {
-      textBlobs.push(block.text)
+      // Apply the provider's user-content policy before any downstream
+      // dispatch — slash detection, history bubble, etc. all run on the
+      // sanitized text. When the policy strips everything, we drop the
+      // bubble entirely (empty string short-circuits the slash check and
+      // never produces a chat message).
+      const cleaned = applyUserContentPolicy(block.text, ctx.userContentPolicy)
+      if (cleaned) textBlobs.push(cleaned)
     }
   }
 
@@ -769,10 +794,15 @@ export function loadHistory(
 
   for (const msg of rawMessages) {
     if (msg.kind === 'user') {
-      const text = msg.blocks
+      const rawText = msg.blocks
         .filter((b): b is NormalizedBlock & { type: 'text' } => b.type === 'text')
         .map((b) => b.text)
         .join('\n')
+      if (!rawText) continue
+      // Strip provider-declared wrapper tags before slash detection / bubble
+      // creation. Keeps history replay aligned with the live `applyUserMessage`
+      // path so a Cmd+R refresh shows the same content as the streaming view.
+      const text = applyUserContentPolicy(rawText, ctx.userContentPolicy)
       if (!text) continue
 
       const envelope = ctx.parseSlashEnvelope?.(text)

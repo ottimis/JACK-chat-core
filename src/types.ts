@@ -113,6 +113,55 @@ export type ParsedSlashEnvelope = {
   commandStdout?: string
 }
 
+/**
+ * Declarative rules for how Jack should interpret a provider's user-role
+ * content. Different from the capability matrix (what the provider can do)
+ * — this lives in the policy axis (how the host renders / sanitizes data).
+ *
+ * Concrete consumer today: `applyUserMessage` and `loadHistory` strip
+ * `hiddenWrapperTags` before rendering. Forward-compat: `infoWrapperTags`
+ * declares structured metadata wrappers (env context, attachments, IDE
+ * hints) — a future renderer release will surface them as chips above
+ * the user bubble. Declaring `infoWrapperTags` today is a no-op for the
+ * reducer beyond stripping; the rendering side ships in a follow-up.
+ *
+ * Both arrays carry plain tag names without angle brackets:
+ *   `['environment_context', 'jack-system']`
+ *
+ * The reducer matches `<tag>...</tag>` (XML-like) blocks case-sensitively
+ * and non-greedy. Multi-line bodies are supported.
+ */
+export type ProviderUserContentPolicy = {
+  /**
+   * Wrapper tag names whose content is fully hidden from the chat. Drops
+   * the user bubble entirely if nothing remains after stripping. Use this
+   * for provider self-injected boilerplate (Codex's `<environment_context>`,
+   * IDE-provided context blocks) and host-injected markers (Jack's
+   * `<jack-system>` envelope around the appended workspace context).
+   */
+  hiddenWrapperTags?: readonly string[]
+  /**
+   * Wrapper tag names whose content should surface as structured metadata
+   * (chips / badges / collapsible panel) instead of being rendered as
+   * user-typed text. The reducer strips them from the bubble's text just
+   * like `hiddenWrapperTags`, but additionally attaches their parsed
+   * payloads to the message for the renderer to display.
+   *
+   * RESERVED for chat-core ≥ 0.6.0 — chip rendering ships in a follow-up.
+   * Declaring it today is safe: the reducer treats `infoWrapperTags`
+   * exactly like `hiddenWrapperTags` until renderer support lands.
+   */
+  infoWrapperTags?: readonly InfoWrapperTagSpec[]
+}
+
+export type InfoWrapperTagSpec = {
+  tag: string
+  /** Short label shown next to the chip. */
+  label: string
+  /** Hint for the renderer's icon / styling switch. */
+  chipKind?: 'env' | 'attachment' | 'workspace' | 'ide' | 'other'
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Reducer actions
 // ─────────────────────────────────────────────────────────────────────────────

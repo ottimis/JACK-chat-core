@@ -282,6 +282,69 @@ describe('reducer — task tools', () => {
   })
 })
 
+describe('reducer — userContentPolicy (provider-declared tag stripping)', () => {
+  it('drops live user bubble whose text is fully wrapped in hidden tags', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: { hiddenWrapperTags: ['environment_context'] }
+    }
+    const state = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg([
+            textBlock('<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>')
+          ])
+        }
+      ],
+      policyCtx
+    )
+    // Body was nothing but the wrapped tag — bubble dropped, no slash chip,
+    // no plain user message.
+    assert.equal(state.messages.length, 0)
+  })
+
+  it('strips wrapped tags and keeps the rest of the user prompt visible (loadHistory)', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: { hiddenWrapperTags: ['environment_context', 'jack-system'] }
+    }
+    const state = loadHistory(
+      [
+        userMsg([
+          textBlock(
+            '<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>\n<jack-system>\nworkspace context here\n</jack-system>\n\nDo the thing.'
+          )
+        ])
+      ],
+      SID,
+      policyCtx
+    )
+    // Wrappers stripped; the user's actual prompt remains as a single bubble.
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'user')
+    assert.equal(state.messages[0]!.content, 'Do the thing.')
+  })
+
+  it('treats infoWrapperTags identically to hiddenWrapperTags at the reducer level (forward-compat)', () => {
+    // Renderer support for chip rendering ships in a follow-up release.
+    // Until then the reducer just strips — declaring info tags is safe.
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: {
+        infoWrapperTags: [{ tag: 'env', label: 'Env', chipKind: 'env' }]
+      }
+    }
+    const state = loadHistory(
+      [userMsg([textBlock('<env>cwd=/proj</env>\n\nLook at this.')])],
+      SID,
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.content, 'Look at this.')
+  })
+})
+
 describe('reducer — slash commands and CLI markers', () => {
   it('renders a slash-command chip for envelope-shaped user messages (with ctx parser)', () => {
     const state = run(
