@@ -142,6 +142,12 @@ export type NormalizedMessage =
       cwd?: string
       /** Tools the provider booted with (when surfaced). */
       tools?: string[]
+      /**
+       * Stable per-message id when the source carries one (e.g. Claude
+       * JSONL `uuid`, Codex `item.id`). Used by the indexer for FTS
+       * dedup. Absent on live streams that don't surface message ids.
+       */
+      messageId?: string
       raw: unknown
     }
   /** Live status hint — `running` while a turn is being produced. */
@@ -161,12 +167,14 @@ export type NormalizedMessage =
       kind: 'assistant'
       blocks: NormalizedBlock[]
       model?: string
+      messageId?: string
       raw: unknown
     }
   /** User turn echo — what the host (or a tool) sent in. */
   | {
       kind: 'user'
       blocks: NormalizedBlock[]
+      messageId?: string
       raw: unknown
     }
   /** End of a single turn. `success=false` carries `errorMessage`. */
@@ -178,12 +186,37 @@ export type NormalizedMessage =
       errorMessage?: string
       /** Free-form summary text some providers emit (Claude `result.result`). */
       resultText?: string
+      messageId?: string
       raw: unknown
     }
   /** Token-by-token streaming firehose. Renderer treats these as ephemeral. */
   | { kind: 'partial_event'; raw: unknown }
-  /** Subagent / Task lifecycle (Claude `system/task_*`). */
-  | { kind: 'task_event'; subtype: string; raw: unknown }
+  /**
+   * Subagent / Task lifecycle. Structured fields are populated by each
+   * provider's translator from its native shape (Claude `system/task_*`,
+   * Codex `collab_tool_call`, …) so the host broadcasts a provider-neutral
+   * payload instead of leaking raw provider events over the
+   * `agent:task` channel. `raw` retains the original wire payload for
+   * analytics / debug.
+   */
+  | {
+      kind: 'task_event'
+      subtype: string
+      taskId: string
+      toolUseId?: string
+      description?: string
+      summary?: string
+      /** Terminal status surfaced on `task_notification`. */
+      status?: 'completed' | 'failed' | 'stopped'
+      usage?: { totalTokens: number; toolUses: number; durationMs: number }
+      lastToolName?: string
+      prompt?: string
+      taskType?: string
+      /** Free-form patch payload — `task_updated` carries provider-shape
+       *  delta info (status, description, …). */
+      patch?: Record<string, unknown>
+      raw: unknown
+    }
   /** Anything we don't recognize — keep streaming, don't crash. */
   | { kind: 'unknown'; raw: unknown }
 
