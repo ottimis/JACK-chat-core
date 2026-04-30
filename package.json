@@ -1,6 +1,6 @@
 {
   "name": "@ottimis/jack-chat-core",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Transport-agnostic message reducer and types for Jack chat (desktop + mobile).",
   "license": "MIT",
   "repository": {
@@ -13,7 +13,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": [
@@ -22,7 +23,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "pnpm clean && tsc && tsc -p tsconfig.cjs.json && node -e \"require('fs').writeFileSync('dist/cjs/package.json', JSON.stringify({type:'commonjs'}))\"",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx tests/*.test.ts",
     "clean": "rm -rf dist"
