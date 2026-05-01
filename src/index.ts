@@ -11,6 +11,18 @@ export type {
   TokenUsage,
   ToolShape
 } from './normalized.js'
+export type {
+  ClientToolHandler,
+  ClientToolHandlerContext,
+  ClientFsHandler,
+  ClientTerminalHandler,
+  ClientToolsHandler,
+  TerminalSpec,
+  TerminalHandle,
+  TerminalOutput,
+  RegisteredTool,
+  ToolCallResult
+} from './client-tool-handler.js'
 export {
   TASK_TOOLS,
   applyUserContentPolicy,

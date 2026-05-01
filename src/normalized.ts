@@ -49,6 +49,8 @@ export type ToolShape =
   | 'fs.read'
   | 'fs.write'
   | 'fs.edit'
+  | 'fs.delete'
+  | 'fs.move'
   | 'fs.list'
   | 'fs.search'
   | 'shell'
@@ -57,6 +59,7 @@ export type ToolShape =
   | 'todo'
   | 'plan'
   | 'ask'
+  | 'topic'
   | 'subagent'
   | 'notebook.edit'
   | 'mcp'
@@ -124,6 +127,13 @@ export type TokenUsage = {
   outputTokens?: number
   cacheCreationInputTokens?: number
   cacheReadInputTokens?: number
+  /**
+   * Reasoning / "thoughts" tokens consumed but not surfaced as visible
+   * output (Codex `reasoning_output_tokens`, Gemini `tokens.thoughts`).
+   * Distinct from `outputTokens` so renderers can show "thinking cost"
+   * separately when a provider exposes it.
+   */
+  reasoningTokens?: number
 }
 
 // ─── Message kinds ───────────────────────────────────────────────────────
