@@ -561,19 +561,53 @@ function applyAssistantFinal(
 
     const ref = block.toolRef
     const shapeFields = toolShapeFields(ref)
-    next = {
-      ...next,
-      messages: next.messages.map((m) =>
-        m.id === block.toolUseId
-          ? {
-              ...m,
-              toolStatus: 'done' as const,
-              streaming: false,
-              toolInput: toRecord(block.input),
-              ...shapeFields
-            }
-          : m
-      )
+    const existing = next.messages.find((m) => m.id === block.toolUseId)
+    if (existing) {
+      // Streaming providers (Claude) created the tool message during the
+      // partial-event phase in 'running' state; the assistant final seals
+      // it as 'done'.
+      next = {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.id === block.toolUseId
+            ? {
+                ...m,
+                toolStatus: 'done' as const,
+                streaming: false,
+                toolInput: toRecord(block.input),
+                ...shapeFields
+              }
+            : m
+        )
+      }
+    } else {
+      // Non-streaming providers (Codex, Gemini, anything emitting tool_use
+      // only on the assistant final): the assistant message is the FIRST
+      // time we see the tool, so we have to push a new chat row.
+      // toolStatus stays 'running' — the matching tool_result block (in a
+      // subsequent 'user' message) flips it to done/error via
+      // applyUserMessage. Without this branch, gemini/codex live runs would
+      // show only the assistant's text+thinking but no tool cards until the
+      // user reloaded via loadHistory (which DOES create per-tool rows).
+      const toolName =
+        block.toolRef.kind === 'native' ? block.toolRef.toolName : block.toolRef.raw
+      const { state: s2, id: bumpedId } = bumpId(next)
+      next = {
+        ...s2,
+        messages: [
+          ...s2.messages,
+          {
+            id: block.toolUseId || bumpedId,
+            type: 'tool',
+            content: '',
+            toolName,
+            toolInput: toRecord(block.input),
+            toolStatus: 'running',
+            timestamp: ctx.now(),
+            ...shapeFields
+          }
+        ]
+      }
     }
   }
   return next
@@ -592,10 +626,30 @@ function applyUserMessage(
       const targetId = block.toolUseId
       if (!targetId) continue
       const nextStatus: 'error' | 'done' = block.isError ? 'error' : 'done'
+      // Coerce content to a string so the tool card renders something for
+      // non-streaming providers (Codex/Gemini deliver final output only on
+      // tool_result; Claude streams it as text deltas into the same row
+      // earlier and arrives here with a non-string `content` whose presence
+      // we don't want to overwrite). Skip the content overwrite when it's
+      // empty so a streamed-from-Claude row keeps its accumulated text.
+      const contentText =
+        typeof block.content === 'string' ? block.content
+        : block.content == null ? ''
+        : Array.isArray(block.content) ? block.content
+            .map((x) => (typeof x === 'object' && x && 'text' in x ? String((x as { text: unknown }).text ?? '') : ''))
+            .filter(Boolean).join('\n')
+        : ''
       next = {
         ...next,
         messages: next.messages.map((m) =>
-          m.id === targetId ? { ...m, toolStatus: nextStatus, streaming: false } : m
+          m.id === targetId
+            ? {
+                ...m,
+                toolStatus: nextStatus,
+                streaming: false,
+                ...(contentText && !m.content ? { content: contentText } : {})
+              }
+            : m
         )
       }
     } else if (block.type === 'text' && typeof block.text === 'string') {
