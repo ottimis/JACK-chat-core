@@ -4,8 +4,13 @@
  * sync manually when the Electron preload contract evolves.
  */
 
+import type { ToolShape } from './normalized.js'
+
 export type InlineFileDiff = {
-  toolName: 'Edit' | 'Write'
+  /** Canonical shape — `fs.write` for whole-file replace, `fs.edit` for
+   *  in-place patch. Provider-neutral; same value Claude `Write`/`Edit` and
+   *  Codex `apply_patch` collapse to. */
+  toolShape: 'fs.write' | 'fs.edit'
   filePath: string
   oldString?: string
   newString?: string
@@ -16,6 +21,10 @@ export type InlineFileDiff = {
 export type PermissionRequestData = {
   sessionId: string
   toolName: string
+  /** Canonical shape from the active provider's tool catalog. Renderers
+   *  should key icons / copy off this and only fall back to `toolName`
+   *  when undefined. */
+  toolShape?: ToolShape
   toolInput: Record<string, unknown>
   title?: string
   description?: string
@@ -28,7 +37,10 @@ export type PermissionRequestData = {
 }
 
 export type FileChangeData = {
-  toolName: 'Edit' | 'Write'
+  /** Provider-emitted tool name. `'Edit'` / `'Write'` from Claude,
+   *  `'apply_patch'` from Codex, etc. The renderer shouldn't switch on
+   *  this — it's display detail. */
+  toolName: string
   toolUseId: string
   filePath: string
   originalFile: string | null
