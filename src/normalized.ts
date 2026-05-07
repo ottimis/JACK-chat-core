@@ -227,6 +227,38 @@ export type NormalizedMessage =
       patch?: Record<string, unknown>
       raw: unknown
     }
+  /**
+   * Conversation compaction lifecycle. Emitted when a provider compacts
+   * the running transcript (Claude `/compact` REPL command lifted to
+   * `compact_boundary` + status messages on the wire). Provider-neutral
+   * shape so renderers can render a generic chip ("Compacting…",
+   * "Compacted 12k → 3k tokens", "Compaction failed: …") without keying
+   * off provider-specific subtypes.
+   *
+   * Phases:
+   *   - `'started'`: provider began compaction; UI may disable the send
+   *     button + render a spinner chip
+   *   - `'succeeded'`: compaction finished; `preTokens`/`postTokens` carry
+   *     the size delta when the provider surfaces them
+   *   - `'failed'`: compaction errored; `errorMessage` is renderer-safe
+   *
+   * Renderers SHOULD treat unknown phase values as ignorable to keep the
+   * union extensible without breaking older hosts.
+   */
+  | {
+      kind: 'compaction'
+      phase: 'started' | 'succeeded' | 'failed'
+      /** Token count before compaction, when surfaced by the provider. */
+      preTokens?: number
+      /** Token count after compaction, when surfaced by the provider. */
+      postTokens?: number
+      /** What triggered compaction — 'manual' (user typed /compact) vs 'auto' (provider's auto-compact). */
+      trigger?: 'manual' | 'auto'
+      /** Renderer-safe error string when `phase === 'failed'`. */
+      errorMessage?: string
+      messageId?: string
+      raw: unknown
+    }
   /** Anything we don't recognize — keep streaming, don't crash. */
   | { kind: 'unknown'; raw: unknown }
 

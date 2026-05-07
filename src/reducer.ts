@@ -343,6 +343,49 @@ function applySdkMessage(
         statusLabel: message.state === 'running' ? 'Thinking' : null
       }
     }
+    case 'compaction': {
+      // Surface compaction as a centred system row in the transcript so the
+      // user always has an audit trail of "Conversation compacted X → Y
+      // tokens" between the pre-compact and post-compact assistant turns.
+      // The chip's progress hint (Compacting…) is a separate UI concern
+      // gated by the per-session live status state — handled outside the
+      // reducer. We only persist the terminal phases here so reloading the
+      // chat keeps the boundary marker visible.
+      if (message.phase === 'started') {
+        // No persisted row — the in-flight chip is the statusLabel. Avoids a
+        // placeholder chat row that would have to be replaced when the
+        // boundary lands. `running:true` keeps the composer in "agent busy"
+        // mode so the user can't fire turns while compaction is in progress.
+        return {
+          ...state,
+          running: true,
+          statusLabel: 'Compacting'
+        }
+      }
+      const { state: s2, id } = bumpId(state)
+      const headline =
+        message.phase === 'failed'
+          ? `Compaction failed${message.errorMessage ? `: ${message.errorMessage}` : ''}`
+          : message.preTokens && message.postTokens
+            ? `Conversation compacted (${message.preTokens.toLocaleString()} → ${message.postTokens.toLocaleString()} tokens)`
+            : 'Conversation compacted'
+      return {
+        ...s2,
+        // Clear the in-flight flag the started phase set; turn_result will
+        // also fire later (the next user turn boundary) but the composer
+        // shouldn't stay locked while we wait for it.
+        statusLabel: null,
+        messages: [
+          ...s2.messages,
+          {
+            id,
+            type: 'result',
+            content: headline,
+            timestamp: ctx.now()
+          }
+        ]
+      }
+    }
     case 'session_init':
     case 'rate_limit':
     case 'task_event':
