@@ -326,22 +326,129 @@ describe('reducer — userContentPolicy (provider-declared tag stripping)', () =
     assert.equal(state.messages[0]!.content, 'Do the thing.')
   })
 
-  it('treats infoWrapperTags identically to hiddenWrapperTags at the reducer level (forward-compat)', () => {
-    // Renderer support for chip rendering ships in a follow-up release.
-    // Until then the reducer just strips — declaring info tags is safe.
+  it('strips infoWrapperTags from text and attaches chips on the user bubble (loadHistory)', () => {
     const policyCtx: ReduceContext = {
       now: () => 1_000_000,
       userContentPolicy: {
-        infoWrapperTags: [{ tag: 'env', label: 'Env', chipKind: 'env' }]
+        infoWrapperTags: [
+          {
+            tag: 'env',
+            label: 'Env',
+            chipKind: 'env',
+            fields: [{ name: 'cwd', from: 'cwd' }]
+          }
+        ]
       }
     }
     const state = loadHistory(
-      [userMsg([textBlock('<env>cwd=/proj</env>\n\nLook at this.')])],
+      [userMsg([textBlock('<env><cwd>/proj</cwd></env>\n\nLook at this.')])],
       SID,
       policyCtx
     )
     assert.equal(state.messages.length, 1)
-    assert.equal(state.messages[0]!.content, 'Look at this.')
+    const m = state.messages[0]!
+    assert.equal(m.type, 'user')
+    assert.equal(m.content, 'Look at this.')
+    assert.ok(m.chips, 'expected chips to be attached')
+    assert.equal(m.chips!.length, 1)
+    assert.equal(m.chips![0]!.tag, 'env')
+    assert.equal(m.chips![0]!.fields.cwd, '/proj')
+  })
+
+  it('emits a chip-only user bubble when infoWrapperTags fully consume the text (loadHistory)', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: {
+        infoWrapperTags: [
+          {
+            tag: 'task-notification',
+            label: 'Background',
+            chipKind: 'task',
+            fields: [{ name: 'status', from: 'status' }]
+          }
+        ]
+      }
+    }
+    const state = loadHistory(
+      [
+        userMsg([
+          textBlock(
+            '<task-notification><status>completed</status></task-notification>'
+          )
+        ])
+      ],
+      SID,
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.type, 'user')
+    assert.equal(m.content, '')
+    assert.equal(m.chips?.[0]?.fields.status, 'completed')
+  })
+
+  it('emits a chip-only user bubble live when info wrapper fully consumes the text (applyUserMessage)', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: {
+        infoWrapperTags: [
+          {
+            tag: 'task-notification',
+            label: 'Background',
+            chipKind: 'task',
+            fields: [{ name: 'status', from: 'status' }]
+          }
+        ]
+      }
+    }
+    const state = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg([
+            textBlock('<task-notification><status>completed</status></task-notification>')
+          ])
+        }
+      ],
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.type, 'user')
+    assert.equal(m.content, '')
+    assert.equal(m.chips?.[0]?.fields.status, 'completed')
+  })
+
+  it('emits one chip per occurrence when the wrapper appears multiple times', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: {
+        infoWrapperTags: [
+          {
+            tag: 'task-notification',
+            label: 'Background',
+            chipKind: 'task',
+            fields: [{ name: 'status', from: 'status' }]
+          }
+        ]
+      }
+    }
+    const state = loadHistory(
+      [
+        userMsg([
+          textBlock(
+            '<task-notification><status>completed</status></task-notification>\n' +
+              '<task-notification><status>failed</status></task-notification>'
+          )
+        ])
+      ],
+      SID,
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.chips?.length, 2)
+    assert.equal(state.messages[0]!.chips?.[0]?.fields.status, 'completed')
+    assert.equal(state.messages[0]!.chips?.[1]?.fields.status, 'failed')
   })
 })
 
@@ -423,6 +530,17 @@ describe('reducer — turn_result and session_state', () => {
     assert.equal(state.messages[0]!.content, 'Error: quota_exceeded')
   })
 
+  it('renders a clean "Stopped" card on the interrupted_by_user marker', () => {
+    const state = reduce(
+      createInitialState(SID),
+      { kind: 'sdk', message: turnResultError('interrupted_by_user') },
+      ctx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'result')
+    assert.equal(state.messages[0]!.content, 'Stopped')
+  })
+
   it('maps session_state.running to Thinking, idle/requires_action to null', () => {
     let state = createInitialState(SID)
     state = reduce(state, { kind: 'sdk', message: sessionState('running') }, ctx)
@@ -456,6 +574,76 @@ describe('reducer — permission and file-change', () => {
     const m = state.messages[0]!
     assert.equal(m.id, 'perm_1')
     assert.equal(m.type, 'pending-permission')
+  })
+
+  it('preserves pending-permission across an out-of-order load-history', () => {
+    // Race scenario from AgentChat: two parallel useEffects on session
+    // mount dispatch `permission-request` (from pendingActions hydration)
+    // and `load-history` (from agentGetMessages) in any order. The pending
+    // must survive a later `load-history` — otherwise an inline approval
+    // card that just landed gets wiped and the user has no UI to approve
+    // (PermissionCard floater is suppressed for the active session).
+    let state = createInitialState(SID)
+    state = reduce(
+      state,
+      {
+        kind: 'permission-request',
+        data: {
+          sessionId: SID,
+          toolName: 'Edit',
+          toolInput: {},
+          cwd: '/tmp',
+          toolUseID: 'perm_late',
+          inlineFileDiff: { toolName: 'Edit', filePath: '/tmp/a.ts' }
+        }
+      },
+      ctx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'pending-permission')
+
+    // Later: load-history arrives with the past transcript (no pending in it).
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('ciao')]),
+      assistantMsg([textBlock('ok')])
+    ]
+    state = reduce(state, { kind: 'load-history', rawMessages: history, sessionId: SID }, ctx)
+
+    // History bubbles AND the pending card both present, pending last.
+    assert.equal(state.messages.length, 3)
+    assert.equal(state.messages[0]!.type, 'user')
+    assert.equal(state.messages[1]!.type, 'assistant')
+    const tail = state.messages[2]!
+    assert.equal(tail.type, 'pending-permission')
+    assert.equal(tail.id, 'perm_late')
+  })
+
+  it('does not duplicate a pending when history already contains a message with the same id', () => {
+    // Defensive: a future provider could persist the tool_use with the
+    // same id as the pending's toolUseID. Re-injecting would create two
+    // visible cards with the same id. The carry-over filter dedupes.
+    let state = createInitialState(SID)
+    state = reduce(
+      state,
+      {
+        kind: 'permission-request',
+        data: {
+          sessionId: SID,
+          toolName: 'Edit',
+          toolInput: {},
+          cwd: '/tmp',
+          toolUseID: 'tu_dup',
+          inlineFileDiff: { toolName: 'Edit', filePath: '/tmp/a.ts' }
+        }
+      },
+      ctx
+    )
+    const history: NormalizedMessage[] = [
+      assistantMsg([nativeToolUse('Edit', 'fs.edit', 'tu_dup', { file_path: '/tmp/a.ts' })])
+    ]
+    state = reduce(state, { kind: 'load-history', rawMessages: history, sessionId: SID }, ctx)
+    const dupCount = state.messages.filter((m) => m.id === 'tu_dup').length
+    assert.equal(dupCount, 1)
   })
 
   it('replaces existing tool card with file-diff on file-change', () => {

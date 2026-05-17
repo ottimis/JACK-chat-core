@@ -33,6 +33,15 @@ export type ChatMessage = {
   type: ChatMessageType
   content: string
   thinking?: string
+  /**
+   * Structured chip payloads extracted from declared `infoWrapperTags`
+   * during reducer processing. Renderers display them as compact pills
+   * above/inside the user bubble (e.g. a background-bash completion
+   * notification). When absent or empty, the bubble renders normally.
+   *
+   * Populated only on `type: 'user'` messages today.
+   */
+  chips?: readonly ParsedChip[]
   toolName?: string
   /**
    * Canonical shape from the provider's tool catalog. Set by the reducer
@@ -118,18 +127,22 @@ export type ParsedSlashEnvelope = {
  * content. Different from the capability matrix (what the provider can do)
  * — this lives in the policy axis (how the host renders / sanitizes data).
  *
- * Concrete consumer today: `applyUserMessage` and `loadHistory` strip
- * `hiddenWrapperTags` before rendering. Forward-compat: `infoWrapperTags`
- * declares structured metadata wrappers (env context, attachments, IDE
- * hints) — a future renderer release will surface them as chips above
- * the user bubble. Declaring `infoWrapperTags` today is a no-op for the
- * reducer beyond stripping; the rendering side ships in a follow-up.
+ * Two complementary axes:
+ *   - `hiddenWrapperTags` — stripped from text, nothing surfaced. For pure
+ *     plumbing the user shouldn't see (Codex `<environment_context>`,
+ *     host `<jack-system>` envelope).
+ *   - `infoWrapperTags` — stripped from text AND parsed into structured
+ *     {@link ParsedChip} payloads attached to the resulting `ChatMessage`
+ *     for the renderer to display as compact pills (Claude's
+ *     `<task-notification>` for background-bash completions, future
+ *     IDE-context blocks, …).
  *
  * Both arrays carry plain tag names without angle brackets:
  *   `['environment_context', 'jack-system']`
  *
  * The reducer matches `<tag>...</tag>` (XML-like) blocks case-sensitively
- * and non-greedy. Multi-line bodies are supported.
+ * and non-greedy. Multi-line bodies are supported. Nesting of the same
+ * tag is not handled — declare a distinct outer tag if you need it.
  */
 export type ProviderUserContentPolicy = {
   /**
@@ -141,25 +154,60 @@ export type ProviderUserContentPolicy = {
    */
   hiddenWrapperTags?: readonly string[]
   /**
-   * Wrapper tag names whose content should surface as structured metadata
-   * (chips / badges / collapsible panel) instead of being rendered as
-   * user-typed text. The reducer strips them from the bubble's text just
-   * like `hiddenWrapperTags`, but additionally attaches their parsed
-   * payloads to the message for the renderer to display.
+   * Wrapper tag specs whose content is parsed into {@link ParsedChip}
+   * payloads and attached to the resulting `ChatMessage.chips`. The
+   * wrapper itself is stripped from the visible text (same as
+   * `hiddenWrapperTags`), so the renderer doesn't see the raw XML — it
+   * sees structured fields per spec instead.
    *
-   * RESERVED for chat-core ≥ 0.6.0 — chip rendering ships in a follow-up.
-   * Declaring it today is safe: the reducer treats `infoWrapperTags`
-   * exactly like `hiddenWrapperTags` until renderer support lands.
+   * When `fields` is omitted, the chip carries only `label` + `raw`
+   * (the inner content) — useful for tags whose body is free-form text.
    */
   infoWrapperTags?: readonly InfoWrapperTagSpec[]
 }
 
+/**
+ * Declaration for a wrapper tag whose body should be parsed into a
+ * structured chip payload. The reducer:
+ *   1. Locates each `<tag>...</tag>` block in the user text.
+ *   2. For each declared field, runs a sub-match `<from>...</from>`
+ *      inside the wrapper body. The captured text (trimmed) is stored
+ *      under `fields[name]`.
+ *   3. Emits one {@link ParsedChip} per wrapper occurrence.
+ *
+ * Multiple occurrences of the same wrapper in one user message produce
+ * multiple chips. A field that doesn't match is simply omitted from
+ * `fields` — renderers handle absence gracefully.
+ */
 export type InfoWrapperTagSpec = {
   tag: string
   /** Short label shown next to the chip. */
   label: string
   /** Hint for the renderer's icon / styling switch. */
-  chipKind?: 'env' | 'attachment' | 'workspace' | 'ide' | 'other'
+  chipKind?: ChipKind
+  /**
+   * Inner tags to surface as named fields on the chip. Each entry maps
+   * a renderer-side `name` to the wrapper-side `from` tag name. Omit
+   * for free-form bodies (the chip then exposes only `raw`).
+   */
+  fields?: readonly { name: string; from: string }[]
+}
+
+export type ChipKind = 'env' | 'attachment' | 'workspace' | 'ide' | 'task' | 'other'
+
+/**
+ * Renderer-facing payload extracted from a declared `infoWrapperTag`
+ * occurrence in a user message. The reducer attaches an array of these
+ * to `ChatMessage.chips`. The renderer keys visual choice off `chipKind`
+ * and reads named fields out of `fields`. `raw` carries the original
+ * wrapper body (trimmed) for tooltip / expand-on-click.
+ */
+export type ParsedChip = {
+  tag: string
+  label: string
+  chipKind?: ChipKind
+  fields: Record<string, string>
+  raw: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

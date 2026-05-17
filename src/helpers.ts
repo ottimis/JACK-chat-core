@@ -1,5 +1,5 @@
 import type { NormalizedToolRef } from './normalized.js'
-import type { ProviderUserContentPolicy } from './types.js'
+import type { ParsedChip, ProviderUserContentPolicy } from './types.js'
 
 /**
  * Tool names the reducer aggregates into a single task-list widget instead of
@@ -72,9 +72,9 @@ export function stripWrapperTags(text: string, tags: readonly string[] | undefin
 /**
  * Apply a {@link ProviderUserContentPolicy} to a user message body. Both
  * `hiddenWrapperTags` and `infoWrapperTags` are stripped from the visible
- * text — the latter is reserved for a future renderer that also surfaces
- * the parsed payloads as chips. Today both arrays are equivalent at the
- * reducer level.
+ * text. The structured payloads behind `infoWrapperTags` are surfaced
+ * separately by {@link extractInfoChips} — the reducer calls both on
+ * each user text block.
  *
  * Returns the text with every declared wrapper removed, trimmed. When the
  * policy is undefined or both arrays are empty/missing, returns input.
@@ -89,6 +89,57 @@ export function applyUserContentPolicy(
     ...(policy.infoWrapperTags?.map((s) => s.tag) ?? [])
   ]
   return stripWrapperTags(text, tags)
+}
+
+/**
+ * Extract structured chip payloads from declared `infoWrapperTags`. For
+ * each tag occurrence found in `text`, build a {@link ParsedChip} with
+ * the declared `fields` sub-matched out of the wrapper body. Multiple
+ * occurrences of the same wrapper produce multiple chips.
+ *
+ * Returns an empty array when the policy has no `infoWrapperTags` or
+ * none match.
+ *
+ * Implementation notes:
+ *   - Outer regex: `<tag>([\s\S]*?)<\/tag>` (non-greedy, multi-line)
+ *   - Field sub-matches: first occurrence wins, captured text trimmed
+ *   - No nesting of identical tags (the non-greedy outer match closes
+ *     on the first inner `</tag>`); declare distinct outer tags if you
+ *     need it.
+ */
+export function extractInfoChips(
+  text: string,
+  policy: ProviderUserContentPolicy | undefined
+): readonly ParsedChip[] {
+  if (!text) return []
+  const specs = policy?.infoWrapperTags
+  if (!specs || specs.length === 0) return []
+  const out: ParsedChip[] = []
+  for (const spec of specs) {
+    const escapedTag = escapeRegex(spec.tag)
+    const wrapperRe = new RegExp(`<${escapedTag}>([\\s\\S]*?)<\\/${escapedTag}>`, 'g')
+    let match: RegExpExecArray | null
+    while ((match = wrapperRe.exec(text)) !== null) {
+      const inner = match[1] ?? ''
+      const fields: Record<string, string> = {}
+      if (spec.fields) {
+        for (const f of spec.fields) {
+          const fieldEsc = escapeRegex(f.from)
+          const fieldRe = new RegExp(`<${fieldEsc}>([\\s\\S]*?)<\\/${fieldEsc}>`)
+          const fm = inner.match(fieldRe)
+          if (fm) fields[f.name] = (fm[1] ?? '').trim()
+        }
+      }
+      out.push({
+        tag: spec.tag,
+        label: spec.label,
+        ...(spec.chipKind ? { chipKind: spec.chipKind } : {}),
+        fields,
+        raw: inner.trim()
+      })
+    }
+  }
+  return out
 }
 
 function escapeRegex(s: string): string {

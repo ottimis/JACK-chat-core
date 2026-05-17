@@ -26,6 +26,7 @@ export type {
 export {
   TASK_TOOLS,
   applyUserContentPolicy,
+  extractInfoChips,
   isJackTaskTool,
   isTaskTool,
   pickStr,

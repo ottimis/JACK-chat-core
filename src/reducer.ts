@@ -1,4 +1,4 @@
-import { applyUserContentPolicy, isJackTaskTool } from './helpers.js'
+import { applyUserContentPolicy, extractInfoChips, isJackTaskTool } from './helpers.js'
 import {
   isClaudeStreamEvent,
   type ClaudeStreamEvent
@@ -14,6 +14,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatState,
+  ParsedChip,
   ParsedSlashEnvelope,
   ProviderUserContentPolicy,
   StreamingBlockEntry
@@ -116,8 +117,21 @@ export function reduce(
     case 'reset':
       return createInitialState(event.sessionId ?? state.sessionId)
 
-    case 'load-history':
-      return loadHistory(event.rawMessages, event.sessionId, ctx)
+    case 'load-history': {
+      const next = loadHistory(event.rawMessages, event.sessionId, ctx)
+      // `pending-permission` messages are live state (sourced from
+      // canUseTool / `pendingActions` table), not history. Without this
+      // carry-over an out-of-order load — typical race in hosts that
+      // hydrate pendings and history in parallel `useEffect`s — wipes
+      // an inline approval card that just landed. Carry every pending
+      // forward; resolution / republish will reconcile by toolUseID.
+      const pendings = state.messages.filter((m) => m.type === 'pending-permission')
+      if (pendings.length === 0) return next
+      const existing = new Set(next.messages.map((m) => m.id))
+      const carry = pendings.filter((m) => !existing.has(m.id))
+      if (carry.length === 0) return next
+      return { ...next, messages: [...next.messages, ...carry] }
+    }
 
     case 'sdk':
       return applySdkMessage(state, event.message, ctx)
@@ -315,9 +329,11 @@ function applySdkMessage(
       const errorContent =
         message.errorMessage === 'error_max_turns'
           ? 'Reached max turns'
-          : message.errorMessage
-            ? `Error: ${message.errorMessage}`
-            : 'Error: unknown'
+          : message.errorMessage === 'interrupted_by_user'
+            ? 'Stopped'
+            : message.errorMessage
+              ? `Error: ${message.errorMessage}`
+              : 'Error: unknown'
       return {
         ...s2,
         messages: [
@@ -663,6 +679,8 @@ function applyUserMessage(
 ): ChatState {
   let next = state
   const textBlobs: string[] = []
+  const blobChips: readonly ParsedChip[][] = []
+  const chipBlobs: ParsedChip[] = []
 
   for (const block of blocks) {
     if (block.type === 'tool_result') {
@@ -698,15 +716,23 @@ function applyUserMessage(
     } else if (block.type === 'text' && typeof block.text === 'string') {
       // Apply the provider's user-content policy before any downstream
       // dispatch — slash detection, history bubble, etc. all run on the
-      // sanitized text. When the policy strips everything, we drop the
-      // bubble entirely (empty string short-circuits the slash check and
-      // never produces a chat message).
+      // sanitized text. When the policy strips everything but `infoWrapperTags`
+      // matched, we still surface a chip-only bubble so the user sees the
+      // async event (e.g. a background bash completion) the model just received.
+      const chips = extractInfoChips(block.text, ctx.userContentPolicy)
       const cleaned = applyUserContentPolicy(block.text, ctx.userContentPolicy)
-      if (cleaned) textBlobs.push(cleaned)
+      if (cleaned) {
+        textBlobs.push(cleaned)
+        ;(blobChips as ParsedChip[][]).push([...chips])
+      } else if (chips.length > 0) {
+        chipBlobs.push(...chips)
+      }
     }
   }
 
-  for (const text of textBlobs) {
+  for (let i = 0; i < textBlobs.length; i++) {
+    const text = textBlobs[i]!
+    const chips = blobChips[i] ?? []
     const envelope = ctx.parseSlashEnvelope?.(text)
     if (envelope) {
       const { state: s2, id } = bumpId(next)
@@ -727,10 +753,69 @@ function applyUserMessage(
           }
         ]
       }
+      // Chips paired with a slash envelope still deserve to render — emit
+      // them as a separate user bubble so the slash card stays clean.
+      if (chips.length > 0) {
+        next = appendChipOnlyUserBubble(next, chips, ctx)
+      }
+    } else if (chips.length > 0) {
+      // Non-slash synthetic user text WITH chips — emit a chip-bearing
+      // user bubble. (Plain non-slash text without chips is dropped to
+      // preserve current behavior: live applyUserMessage doesn't echo
+      // user-typed content, that path is owned by `user-prompt`.)
+      next = appendChipBearingUserBubble(next, text, chips, ctx)
     }
   }
 
+  // Pure chip extractions from text blocks that were fully stripped.
+  if (chipBlobs.length > 0) {
+    next = appendChipOnlyUserBubble(next, chipBlobs, ctx)
+  }
+
   return next
+}
+
+function appendChipOnlyUserBubble(
+  state: ChatState,
+  chips: readonly ParsedChip[],
+  ctx: ReduceContext
+): ChatState {
+  const { state: s2, id } = bumpId(state)
+  return {
+    ...s2,
+    messages: [
+      ...s2.messages,
+      {
+        id,
+        type: 'user',
+        content: '',
+        chips,
+        timestamp: ctx.now()
+      }
+    ]
+  }
+}
+
+function appendChipBearingUserBubble(
+  state: ChatState,
+  text: string,
+  chips: readonly ParsedChip[],
+  ctx: ReduceContext
+): ChatState {
+  const { state: s2, id } = bumpId(state)
+  return {
+    ...s2,
+    messages: [
+      ...s2.messages,
+      {
+        id,
+        type: 'user',
+        content: text,
+        chips,
+        timestamp: ctx.now()
+      }
+    ]
+  }
 }
 
 function applyPermissionRequest(
@@ -899,10 +984,14 @@ export function loadHistory(
       // Strip provider-declared wrapper tags before slash detection / bubble
       // creation. Keeps history replay aligned with the live `applyUserMessage`
       // path so a Cmd+R refresh shows the same content as the streaming view.
+      // Chips are extracted from the same raw text BEFORE strip, so an
+      // info-wrapper that fully consumes the user message still surfaces
+      // as a chip-only bubble (e.g. Claude's `<task-notification>`).
+      const chips = extractInfoChips(rawText, ctx.userContentPolicy)
       const text = applyUserContentPolicy(rawText, ctx.userContentPolicy)
-      if (!text) continue
+      if (!text && chips.length === 0) continue
 
-      const envelope = ctx.parseSlashEnvelope?.(text)
+      const envelope = text ? ctx.parseSlashEnvelope?.(text) : null
       if (envelope) {
         const { state: s2, id } = bumpId(state)
         state = {
@@ -922,11 +1011,40 @@ export function loadHistory(
             }
           ]
         }
-      } else if (!ctx.isCliMarkerOnly?.(text)) {
+        // Chips alongside a slash envelope render as their own bubble.
+        if (chips.length > 0) {
+          const { state: s3, id: chipId } = bumpId(state)
+          state = {
+            ...s3,
+            messages: [
+              ...s3.messages,
+              { id: chipId, type: 'user', content: '', chips, timestamp: 0 }
+            ]
+          }
+        }
+      } else if (text && !ctx.isCliMarkerOnly?.(text)) {
         const { state: s2, id } = bumpId(state)
         state = {
           ...s2,
-          messages: [...s2.messages, { id, type: 'user', content: text, timestamp: 0 }]
+          messages: [
+            ...s2.messages,
+            {
+              id,
+              type: 'user',
+              content: text,
+              ...(chips.length > 0 ? { chips } : {}),
+              timestamp: 0
+            }
+          ]
+        }
+      } else if (chips.length > 0) {
+        // Chip-only injection (CLI marker or fully-stripped text). Surface
+        // the chips on their own user bubble so the timeline preserves the
+        // async event.
+        const { state: s2, id } = bumpId(state)
+        state = {
+          ...s2,
+          messages: [...s2.messages, { id, type: 'user', content: '', chips, timestamp: 0 }]
         }
       }
       continue

@@ -187,7 +187,15 @@ export type NormalizedMessage =
       messageId?: string
       raw: unknown
     }
-  /** End of a single turn. `success=false` carries `errorMessage`. */
+  /**
+   * End of a single turn. `success=false` carries `errorMessage`.
+   *
+   * Known structured marker values the reducer renders without the
+   * `Error: …` prefix (providers should emit these when applicable):
+   *   - `'error_max_turns'` → "Reached max turns"
+   *   - `'interrupted_by_user'` → "Stopped"
+   * Anything else is treated as a free-form error string.
+   */
   | {
       kind: 'turn_result'
       success: boolean
@@ -359,5 +367,29 @@ export type NormalizedHookEvent =
       filePath?: string
       /** Structured diff when available (Claude `structuredPatch`). */
       structuredPatch?: unknown
+      /**
+       * Canonical pre-tool file content for write-class tools (`fs.write`,
+       * `fs.edit`, `notebook.edit`). Used by the host's per-turn snapshot
+       * subsystem to build a "before" side for the diff editor without
+       * having to read the file from disk (which would be post-write by
+       * the time this event fires).
+       *
+       * Each provider is responsible for populating this:
+       *   - **string** (incl. `''`) = the file existed pre-tool; this is
+       *     its full content immediately before the write
+       *   - **null** = the file did not exist pre-tool (Write created it)
+       *   - **undefined** = the provider doesn't expose this signal
+       *     (best-effort degraded: host records `existed=false`)
+       *
+       * Provider implementations:
+       *   - Claude: lifted from `tool_response.originalFile`, with
+       *     `type === 'create'` mapped to `null`
+       *   - Codex: derived post-write from `git show HEAD:<relPath>` —
+       *     best-effort, accurate when the file was committed-clean at
+       *     turn start; falls back to undefined when the file is untracked
+       *     or git is unavailable
+       *   - Gemini: TBD by the provider plugin
+       */
+      originalContent?: string | null
       raw: unknown
     }
