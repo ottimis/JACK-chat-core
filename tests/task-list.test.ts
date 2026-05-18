@@ -46,13 +46,42 @@ describe('applyTaskTool', () => {
     assert.equal(step2.messages[0]!.tasks?.[0]?.updatedAt, NOW + 1)
   })
 
-  it('is a no-op for TaskList / TaskGet', () => {
+  it('is a no-op for read-only / runtime task tools', () => {
     const initial: ChatMessage[] = []
-    const r1 = applyTaskTool(initial, sessionId, 'TaskList', {}, 0, NOW)
-    const r2 = applyTaskTool(initial, sessionId, 'TaskGet', {}, 0, NOW)
-    assert.equal(r1.messages, initial)
-    assert.equal(r2.messages, initial)
-    assert.equal(r1.taskCounter, 0)
+    for (const tool of ['TaskList', 'TaskGet', 'TaskStop', 'TaskOutput']) {
+      const r = applyTaskTool(initial, sessionId, tool, {}, 0, NOW)
+      assert.equal(r.messages, initial, `${tool} should not mutate messages`)
+      assert.equal(r.taskCounter, 0, `${tool} should not bump counter`)
+    }
+  })
+
+  it('marks a task as deleted on TaskDelete', () => {
+    const step1 = applyTaskTool([], sessionId, 'TaskCreate', { subject: 'A' }, 0, NOW)
+    const step2 = applyTaskTool(
+      step1.messages,
+      sessionId,
+      'TaskDelete',
+      { taskId: '1' },
+      step1.taskCounter,
+      NOW + 1
+    )
+    assert.equal(step2.messages[0]!.tasks?.length, 1, 'entry stays for audit trail')
+    assert.equal(step2.messages[0]!.tasks?.[0]?.status, 'deleted')
+    assert.equal(step2.messages[0]!.tasks?.[0]?.updatedAt, NOW + 1)
+    assert.equal(step2.taskCounter, step1.taskCounter)
+  })
+
+  it('is a no-op for TaskDelete with unknown taskId', () => {
+    const step1 = applyTaskTool([], sessionId, 'TaskCreate', { subject: 'A' }, 0, NOW)
+    const step2 = applyTaskTool(
+      step1.messages,
+      sessionId,
+      'TaskDelete',
+      { taskId: '99' },
+      step1.taskCounter,
+      NOW + 1
+    )
+    assert.equal(step2.messages, step1.messages)
   })
 
   it('is a no-op for TaskUpdate with unknown taskId', () => {

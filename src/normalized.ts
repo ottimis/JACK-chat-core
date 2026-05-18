@@ -61,6 +61,7 @@ export type ToolShape =
   | 'ask'
   | 'topic'
   | 'subagent'
+  | 'task'
   | 'notebook.edit'
   | 'mcp'
   | 'unknown'

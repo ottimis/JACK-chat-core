@@ -5,6 +5,7 @@ import {
   extractInfoChips,
   isTaskTool,
   isJackTaskTool,
+  isTaskCoordinationTool,
   stripWrapperTags
 } from '../src/helpers.js'
 import type { NormalizedToolRef } from '../src/normalized.js'
@@ -12,7 +13,15 @@ import type { ProviderUserContentPolicy } from '../src/types.js'
 
 describe('isTaskTool (deprecated)', () => {
   it('recognises task-family tools', () => {
-    for (const name of ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']) {
+    for (const name of [
+      'TaskCreate',
+      'TaskUpdate',
+      'TaskList',
+      'TaskGet',
+      'TaskStop',
+      'TaskOutput',
+      'TaskDelete'
+    ]) {
       assert.equal(isTaskTool(name), true, `expected ${name} to be task tool`)
     }
   })
@@ -24,31 +33,74 @@ describe('isTaskTool (deprecated)', () => {
   })
 })
 
-describe('isJackTaskTool', () => {
-  function ref(kind: 'native' | 'mcp', name: string, slug = 'jack'): NormalizedToolRef {
+describe('isTaskCoordinationTool', () => {
+  function ref(
+    kind: 'native' | 'mcp',
+    name: string,
+    opts: { slug?: string; shape?: 'task' | 'unknown' | 'subagent' } = {}
+  ): NormalizedToolRef {
     if (kind === 'native') {
-      return { kind: 'native', toolName: name, shape: 'unknown', raw: name }
+      return {
+        kind: 'native',
+        toolName: name,
+        shape: opts.shape ?? 'task',
+        raw: name
+      }
     }
+    const slug = opts.slug ?? 'jack'
     return { kind: 'mcp', serverSlug: slug, toolName: name, raw: `mcp__${slug}__${name}` }
   }
 
-  it('matches mcp__jack__Task* tools', () => {
-    assert.equal(isJackTaskTool(ref('mcp', 'TaskCreate')), true)
-    assert.equal(isJackTaskTool(ref('mcp', 'TaskUpdate')), true)
-    assert.equal(isJackTaskTool(ref('mcp', 'TaskList')), true)
-    assert.equal(isJackTaskTool(ref('mcp', 'TaskGet')), true)
+  it('matches native tools whose catalog declares shape: "task"', () => {
+    assert.equal(isTaskCoordinationTool(ref('native', 'TaskCreate', { shape: 'task' })), true)
+    assert.equal(isTaskCoordinationTool(ref('native', 'TaskUpdate', { shape: 'task' })), true)
+    // The shape is the source of truth, not the name — a future provider
+    // could rename the tool and it'd still aggregate.
+    assert.equal(isTaskCoordinationTool(ref('native', 'AnyName', { shape: 'task' })), true)
+  })
+
+  it('rejects native tools with a different shape (e.g. legacy Task)', () => {
+    assert.equal(
+      isTaskCoordinationTool(ref('native', 'Task', { shape: 'subagent' })),
+      false
+    )
+    assert.equal(
+      isTaskCoordinationTool(ref('native', 'TaskCreate', { shape: 'unknown' })),
+      false
+    )
+  })
+
+  it('matches mcp__jack__Task* tools (back-compat)', () => {
+    for (const name of ['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'TaskDelete']) {
+      assert.equal(isTaskCoordinationTool(ref('mcp', name)), true, `expected mcp__jack__${name}`)
+    }
   })
 
   it('rejects mcp tools from other servers even if the name matches', () => {
-    assert.equal(isJackTaskTool(ref('mcp', 'TaskCreate', 'other')), false)
-  })
-
-  it('rejects native tools that happen to share a name', () => {
-    assert.equal(isJackTaskTool(ref('native', 'TaskCreate')), false)
+    assert.equal(isTaskCoordinationTool(ref('mcp', 'TaskCreate', { slug: 'other' })), false)
   })
 
   it('rejects unrelated mcp tools', () => {
-    assert.equal(isJackTaskTool(ref('mcp', 'authenticate', 'figma')), false)
+    assert.equal(isTaskCoordinationTool(ref('mcp', 'authenticate', { slug: 'figma' })), false)
+  })
+})
+
+describe('isJackTaskTool (deprecated alias)', () => {
+  it('delegates to isTaskCoordinationTool', () => {
+    const native: NormalizedToolRef = {
+      kind: 'native',
+      toolName: 'TaskCreate',
+      shape: 'task',
+      raw: 'TaskCreate'
+    }
+    const mcp: NormalizedToolRef = {
+      kind: 'mcp',
+      serverSlug: 'jack',
+      toolName: 'TaskUpdate',
+      raw: 'mcp__jack__TaskUpdate'
+    }
+    assert.equal(isJackTaskTool(native), true)
+    assert.equal(isJackTaskTool(mcp), true)
   })
 })
 

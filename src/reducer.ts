@@ -1,4 +1,4 @@
-import { applyUserContentPolicy, extractInfoChips, isJackTaskTool } from './helpers.js'
+import { applyUserContentPolicy, extractInfoChips, isTaskCoordinationTool } from './helpers.js'
 import {
   isClaudeStreamEvent,
   type ClaudeStreamEvent
@@ -473,9 +473,18 @@ function applyStreamEvent(
 
         // Aggregated Task tools: no placeholder card, the task-list widget is
         // updated when the final 'assistant' message arrives. The streaming
-        // event only carries the wire name (e.g. `mcp__jack__TaskCreate`),
-        // so we do prefix-aware matching here without going through a full
-        // NormalizedToolRef parse.
+        // event only carries the wire name (e.g. `mcp__jack__TaskCreate`,
+        // or Claude SDK's bare `TaskCreate`), so we do prefix-aware matching
+        // here without going through a full NormalizedToolRef parse.
+        //
+        // Note: matching bare names like `TaskCreate` here keeps a small
+        // amount of provider-naming knowledge in the reducer for the
+        // streaming-start window only — the authoritative routing happens
+        // in `isTaskCoordinationTool` once the assistant final arrives with
+        // a fully resolved `NormalizedToolRef`. A non-task provider that
+        // happens to ship a tool literally named `TaskCreate` would briefly
+        // suppress the placeholder card here, then render normally as a
+        // generic tool once the final message lands.
         if (isTaskWireName(name)) {
           return {
             ...state,
@@ -604,7 +613,7 @@ function applyAssistantFinal(
     if (block.type !== 'tool_use') continue
     if (!block.toolUseId) continue
 
-    if (isJackTaskTool(block.toolRef)) {
+    if (isTaskCoordinationTool(block.toolRef)) {
       const sessionId = next.sessionId ?? 'global'
       const result = applyTaskTool(
         next.messages,
@@ -944,10 +953,26 @@ function toolShapeFields(ref: NormalizedToolRef): {
 }
 
 const TASK_WIRE_NAMES: ReadonlySet<string> = new Set([
+  // Jack MCP server route (back-compat with providers that don't have
+  // native task tools — Codex, Gemini today).
   'mcp__jack__TaskCreate',
   'mcp__jack__TaskUpdate',
   'mcp__jack__TaskList',
-  'mcp__jack__TaskGet'
+  'mcp__jack__TaskGet',
+  'mcp__jack__TaskStop',
+  'mcp__jack__TaskOutput',
+  'mcp__jack__TaskDelete',
+  // Bare names emitted by providers whose native catalog declares them
+  // with `shape: 'task'`. Listing them keeps the streaming-start path
+  // from creating a placeholder card before the assistant final arrives
+  // with the resolved shape.
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  'TaskStop',
+  'TaskOutput',
+  'TaskDelete'
 ])
 
 function isTaskWireName(name?: string): boolean {
@@ -1083,7 +1108,7 @@ export function loadHistory(
       for (const block of blocks) {
         if (block.type !== 'tool_use') continue
 
-        if (isJackTaskTool(block.toolRef)) {
+        if (isTaskCoordinationTool(block.toolRef)) {
           const result = applyTaskTool(
             state.messages,
             sessionId,

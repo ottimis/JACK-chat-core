@@ -280,6 +280,65 @@ describe('reducer — task tools', () => {
     ])
     assert.equal(state.messages.length, 0)
   })
+
+  it('aggregates native task tools (shape: task) into the same widget', () => {
+    let state = createInitialState(SID)
+    state = reduce(
+      state,
+      {
+        kind: 'sdk',
+        message: assistantMsg([nativeToolUse('TaskCreate', 'task', 'n1', { subject: 'A' })])
+      },
+      ctx
+    )
+    state = reduce(
+      state,
+      {
+        kind: 'sdk',
+        message: assistantMsg([nativeToolUse('TaskCreate', 'task', 'n2', { subject: 'B' })])
+      },
+      ctx
+    )
+    state = reduce(
+      state,
+      {
+        kind: 'sdk',
+        message: assistantMsg([
+          nativeToolUse('TaskUpdate', 'task', 'n3', { taskId: '1', status: 'completed' })
+        ])
+      },
+      ctx
+    )
+    state = reduce(
+      state,
+      {
+        kind: 'sdk',
+        message: assistantMsg([nativeToolUse('TaskDelete', 'task', 'n4', { taskId: '2' })])
+      },
+      ctx
+    )
+
+    assert.equal(state.messages.length, 1)
+    const list = state.messages[0]!
+    assert.equal(list.type, 'task-list')
+    assert.equal(list.tasks?.length, 2)
+    assert.equal(list.tasks?.[0]?.status, 'completed')
+    assert.equal(list.tasks?.[1]?.status, 'deleted')
+  })
+
+  it('does not create a placeholder card for native task tools during streaming', () => {
+    const state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 't1', name: 'TaskCreate' }
+        })
+      }
+    ])
+    assert.equal(state.messages.length, 0)
+  })
 })
 
 describe('reducer — userContentPolicy (provider-declared tag stripping)', () => {
@@ -742,6 +801,24 @@ describe('loadHistory', () => {
     const list = state.messages[2]!
     assert.equal(list.type, 'task-list')
     assert.equal(list.tasks?.length, 2)
+  })
+
+  it('aggregates native task tools from history into a task-list message', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('do stuff')]),
+      assistantMsg([
+        textBlock('starting'),
+        nativeToolUse('TaskCreate', 'task', 't1', { subject: 'A' }),
+        nativeToolUse('TaskCreate', 'task', 't2', { subject: 'B' }),
+        nativeToolUse('TaskUpdate', 'task', 't3', { taskId: '2', status: 'in_progress' })
+      ])
+    ]
+    const state = loadHistory(history, SID, ctx)
+    assert.equal(state.messages.length, 3)
+    const list = state.messages[2]!
+    assert.equal(list.type, 'task-list')
+    assert.equal(list.tasks?.length, 2)
+    assert.equal(list.tasks?.[1]?.status, 'in_progress')
   })
 })
 

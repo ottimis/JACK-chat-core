@@ -2,21 +2,32 @@ import type { NormalizedToolRef } from './normalized.js'
 import type { ParsedChip, ProviderUserContentPolicy } from './types.js'
 
 /**
- * Tool names the reducer aggregates into a single task-list widget instead of
- * rendering as individual tool cards. These are Jack-specific MCP tools
- * exposed by the `jack` server (e.g. `mcp__jack__TaskCreate`); the entry
- * here is the local tool name the server emits, without the provider-side
- * wire prefix.
+ * Tool names the reducer aggregates into the task-list widget. Two
+ * routing surfaces produce them today:
+ *
+ *   - The Jack MCP server (`mcp__jack__TaskCreate`, …) — legacy path.
+ *   - Provider-native tools whose catalog entry declares `shape: 'task'`
+ *     (Claude SDK's built-in `TaskCreate` / `TaskUpdate` / … — the Agent
+ *     Teams coordination tools).
+ *
+ * The names listed here are the *local* tool names without any provider
+ * wire prefix. Used by:
+ *   - `isTaskCoordinationTool` for the MCP back-compat branch
+ *   - the streaming `tool_use` start path in the reducer, which only sees
+ *     the wire name (no shape yet) — see `isTaskWireName`
  */
 export const TASK_TOOLS: ReadonlySet<string> = new Set([
   'TaskCreate',
   'TaskUpdate',
   'TaskList',
-  'TaskGet'
+  'TaskGet',
+  'TaskStop',
+  'TaskOutput',
+  'TaskDelete'
 ])
 
 /**
- * @deprecated Prefer {@link isJackTaskTool} — it disambiguates Jack's MCP
+ * @deprecated Prefer {@link isTaskCoordinationTool} — it disambiguates Jack's MCP
  * task tools from any native tool that happens to share a name. Retained
  * for tests and downstream consumers that still pattern-match on raw names.
  */
@@ -25,12 +36,34 @@ export function isTaskTool(name?: string): boolean {
 }
 
 /**
- * True when a normalized tool reference points at one of the Jack-server
- * MCP task tools (`mcp__jack__TaskCreate` etc.). The reducer aggregates
- * these into the task-list widget instead of rendering individual cards.
+ * True when a normalized tool reference is one the reducer should fold
+ * into the aggregated task-list widget instead of rendering as its own
+ * tool card.
+ *
+ * Two routing surfaces match:
+ *   - **Native**: provider's tool catalog declares `shape: 'task'`. Used
+ *     by Claude's SDK-built-in `TaskCreate` / `TaskUpdate` / … (Agent
+ *     Teams coordination tools).
+ *   - **MCP**: Jack's in-process MCP server exposes the same coordination
+ *     surface for providers without native task-tools (`mcp__jack__TaskCreate`).
+ *
+ * The check intentionally does NOT pattern-match native tool names — the
+ * provider's catalog is the source of truth, so any future provider that
+ * declares `shape: 'task'` gets aggregated without touching this file.
+ */
+export function isTaskCoordinationTool(ref: NormalizedToolRef): boolean {
+  if (ref.kind === 'native') return ref.shape === 'task'
+  return ref.serverSlug === 'jack' && TASK_TOOLS.has(ref.toolName)
+}
+
+/**
+ * @deprecated Renamed to {@link isTaskCoordinationTool} when the native
+ * `shape: 'task'` branch landed. Kept as an alias so external consumers
+ * (Jack-mobile, downstream tests) keep building during the deprecation
+ * window.
  */
 export function isJackTaskTool(ref: NormalizedToolRef): boolean {
-  return ref.kind === 'mcp' && ref.serverSlug === 'jack' && TASK_TOOLS.has(ref.toolName)
+  return isTaskCoordinationTool(ref)
 }
 
 export function pickStr(input: unknown, key: string): string | undefined {

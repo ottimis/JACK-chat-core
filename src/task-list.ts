@@ -2,11 +2,14 @@ import { pickStr } from './helpers.js'
 import type { ChatMessage, TaskItem } from './types.js'
 
 /**
- * Apply a TaskCreate / TaskUpdate tool_use to the session's aggregated
- * task-list message. Returns an updated messages array (and the task
- * counter after any creations).
+ * Apply a TaskCreate / TaskUpdate / TaskDelete tool_use to the session's
+ * aggregated task-list message. Returns an updated messages array (and
+ * the task counter after any creations).
  *
- * `TaskList` and `TaskGet` are read-only — the function is a no-op for them.
+ * Read-only or runtime-only tools (`TaskList`, `TaskGet`, `TaskStop`,
+ * `TaskOutput`) are no-ops — they don't mutate the visible list. The
+ * task entries themselves still appear in the aggregated widget via
+ * earlier `TaskCreate` / `TaskUpdate` events.
  */
 export function applyTaskTool(
   messages: ChatMessage[],
@@ -51,8 +54,15 @@ export function applyTaskTool(
       status: (pickStr(patch, 'status') as TaskItem['status']) ?? current.status,
       updatedAt: now
     }
+  } else if (toolName === 'TaskDelete') {
+    const taskId = pickStr(input, 'taskId')
+    if (!taskId) return { messages, taskCounter }
+    const idx = tasks.findIndex((t) => t.id === taskId)
+    if (idx < 0) return { messages, taskCounter }
+    const current = tasks[idx]!
+    tasks[idx] = { ...current, status: 'deleted', updatedAt: now }
   } else {
-    // TaskList / TaskGet — no-op
+    // TaskList / TaskGet / TaskStop / TaskOutput — no-op
     return { messages, taskCounter }
   }
 
