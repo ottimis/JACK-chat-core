@@ -339,6 +339,40 @@ describe('reducer — task tools', () => {
     ])
     assert.equal(state.messages.length, 0)
   })
+
+  it('discards input_json_delta deltas for task tools instead of spawning stray assistant bubbles', () => {
+    const state = run([
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 't1', name: 'TaskCreate' }
+        })
+      },
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"subject":"A' }
+        })
+      },
+      {
+        kind: 'sdk',
+        message: claudeStream({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: 'lpha"}' }
+        })
+      },
+      {
+        kind: 'sdk',
+        message: claudeStream({ type: 'content_block_stop', index: 0 })
+      }
+    ])
+    assert.equal(state.messages.length, 0)
+  })
 })
 
 describe('reducer — userContentPolicy (provider-declared tag stripping)', () => {

@@ -498,11 +498,18 @@ function applyStreamEvent(
         // happens to ship a tool literally named `TaskCreate` would briefly
         // suppress the placeholder card here, then render normally as a
         // generic tool once the final message lands.
+        //
+        // We also intentionally DROP this block from `streamingBlocks`:
+        // since no chat row owns the tool's id, the upcoming
+        // `input_json_delta` events for this index would otherwise land
+        // in `appendDelta(state, toolUseId, 'content', ...)`, miss the
+        // (non-existent) target row, and synthesize a stray `assistant`
+        // bubble per task call carrying the partial JSON. Skipping the
+        // entry here turns those deltas into safe no-ops.
         if (isTaskWireName(name)) {
           return {
             ...state,
             messages,
-            streamingBlocks: nextStreaming,
             currentAssistantId: null,
             running: true
           }
