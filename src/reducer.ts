@@ -118,6 +118,19 @@ export function reduce(
       return createInitialState(event.sessionId ?? state.sessionId)
 
     case 'load-history': {
+      // Empty history + live state in memory → no-op. Race scenario from a
+      // fresh session's first turn: the host dispatches `user-prompt`
+      // optimistically (bubble appears, running=true), then `system/init`
+      // assigns the provider session id, which retriggers the host's
+      // history-load effect with an empty transcript (nothing committed
+      // to disk yet). Without this guard the optimistic user bubble (and
+      // any in-flight streaming) is wiped until the SDK wire echoes the
+      // user message back — the visible "first message disappears until
+      // response" bug. History is authoritative only for COMMITTED turns;
+      // an empty rawMessages means "nothing to load", not "clear state".
+      if (event.rawMessages.length === 0 && state.messages.length > 0) {
+        return state
+      }
       const next = loadHistory(event.rawMessages, event.sessionId, ctx)
       // `pending-permission` messages are live state (sourced from
       // canUseTool / `pendingActions` table), not history. Without this

@@ -677,6 +677,43 @@ describe('reducer — permission and file-change', () => {
     assert.equal(tail.id, 'perm_late')
   })
 
+  it('preserves live state when load-history fires with an empty transcript (first-turn race)', () => {
+    // Race scenario from AgentChat on a fresh session:
+    // 1. User dispatches `user-prompt` → optimistic bubble + running=true.
+    // 2. Provider emits `system/init` → host broadcasts session-id-assigned.
+    // 3. The host's history-load effect re-runs (deps include the new
+    //    provider session id), fetches an empty transcript (fresh session,
+    //    nothing committed yet) and dispatches `load-history` with
+    //    rawMessages=[]. Before the fix this wiped the optimistic user
+    //    bubble until the SDK wire echoed the user message back — the
+    //    visible "first message disappears until response" bug.
+    let state = createInitialState(SID)
+    state = reduce(state, { kind: 'user-prompt', text: 'ciao' }, ctx)
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.type, 'user')
+    assert.equal(state.running, true)
+
+    state = reduce(state, { kind: 'load-history', rawMessages: [], sessionId: SID }, ctx)
+
+    // Optimistic bubble and running flag survive.
+    assert.equal(state.messages.length, 1)
+    const u = state.messages[0]!
+    assert.equal(u.type, 'user')
+    assert.equal(u.type === 'user' ? u.content : null, 'ciao')
+    assert.equal(state.running, true)
+  })
+
+  it('still resets to empty when both state and history are empty', () => {
+    // Sanity: the empty-history guard must NOT trigger when there's
+    // nothing to preserve — otherwise a `load-history` with no transcript
+    // on a brand-new state would short-circuit and skip session id
+    // assignment / counter init that `loadHistory()` performs.
+    let state = createInitialState(SID)
+    state = reduce(state, { kind: 'load-history', rawMessages: [], sessionId: SID }, ctx)
+    assert.equal(state.messages.length, 0)
+    assert.equal(state.sessionId, SID)
+  })
+
   it('does not duplicate a pending when history already contains a message with the same id', () => {
     // Defensive: a future provider could persist the tool_use with the
     // same id as the pending's toolUseID. Re-injecting would create two
