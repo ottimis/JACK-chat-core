@@ -1201,6 +1201,109 @@ describe('reducer — slash-feedback', () => {
   })
 })
 
+describe('reducer — providerMessageId propagation', () => {
+  // Why this matters: BranchFromHereButton in the desktop renderer passes
+  // the chat row's id to the provider's `forkSession({ upToMessageId })`,
+  // but row ids are a synthetic counter. Without surfacing the provider's
+  // own transcript id (Claude JSONL `uuid`, Codex `item.id`) on the row,
+  // forkSession can't find the cutoff and silently throws "Cutoff message
+  // not found". These tests pin the carry-over for both live and replay.
+  it('carries messageId onto a chip-bearing live user bubble', () => {
+    // Single text block with both an info-wrapper occurrence and surrounding
+    // text. After stripping the wrapper the cleaned text remains, so
+    // applyUserMessage takes the `chips.length > 0 && cleaned` branch and
+    // emits one chip-bearing user bubble.
+    const policy = {
+      infoWrapperTags: [
+        { tag: 'task-notification', label: 'task', chipKind: 'task' as const }
+      ]
+    }
+    const live = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg(
+            [textBlock('hello <task-notification>done</task-notification> world')],
+            { messageId: 'claude-uuid-live-1' }
+          )
+        }
+      ],
+      { ...ctx, userContentPolicy: policy }
+    )
+    const userBubbles = live.messages.filter((m) => m.type === 'user')
+    assert.equal(userBubbles.length, 1)
+    assert.equal(userBubbles[0]!.providerMessageId, 'claude-uuid-live-1')
+    assert.equal(userBubbles[0]!.chips?.length, 1)
+  })
+
+  it('carries messageId onto a chip-only live user bubble (text fully stripped)', () => {
+    // Single text block entirely consumed by the info-wrapper. Cleaned text
+    // is empty → applyUserMessage routes through chipBlobs and emits a
+    // chip-only user bubble at the end. providerMessageId must follow.
+    const policy = {
+      infoWrapperTags: [
+        { tag: 'task-notification', label: 'task', chipKind: 'task' as const }
+      ]
+    }
+    const live = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg(
+            [textBlock('<task-notification>done</task-notification>')],
+            { messageId: 'claude-uuid-chip-only' }
+          )
+        }
+      ],
+      { ...ctx, userContentPolicy: policy }
+    )
+    const userBubbles = live.messages.filter((m) => m.type === 'user')
+    assert.equal(userBubbles.length, 1)
+    assert.equal(userBubbles[0]!.content, '')
+    assert.equal(userBubbles[0]!.providerMessageId, 'claude-uuid-chip-only')
+  })
+
+  it('carries messageId from a slash-envelope user echo onto the slash-command row', () => {
+    const state = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg(
+            [textBlock('<command-name>review</command-name><command-args>HEAD</command-args>')],
+            { messageId: 'claude-uuid-slash-2' }
+          )
+        }
+      ],
+      slashCtx
+    )
+    const slash = state.messages.find((m) => m.type === 'slash-command')!
+    assert.equal(slash.commandName, 'review')
+    assert.equal(slash.providerMessageId, 'claude-uuid-slash-2')
+  })
+
+  it('carries messageId through loadHistory replay onto the user bubble', () => {
+    const history: NormalizedMessage[] = [
+      userMsg([textBlock('ciao')], { messageId: 'claude-uuid-history-3' }),
+      assistantMsg([textBlock('ok')])
+    ]
+    const state = loadHistory(history, SID, ctx)
+    const user = state.messages.find((m) => m.type === 'user')!
+    assert.equal(user.content, 'ciao')
+    assert.equal(user.providerMessageId, 'claude-uuid-history-3')
+  })
+
+  it('leaves providerMessageId undefined for locally-originated user-prompt bubbles', () => {
+    // user-prompt is the optimistic local echo dispatched by the desktop
+    // before the wire roundtrip lands the kind: 'user' event. The fork
+    // button must disable for these rows until the roundtrip populates the
+    // provider id.
+    const state = run([{ kind: 'user-prompt', text: 'optimistic' }])
+    const user = state.messages.find((m) => m.type === 'user')!
+    assert.equal(user.content, 'optimistic')
+    assert.equal(user.providerMessageId, undefined)
+  })
+})
+
 describe('reducer — tool_result error path', () => {
   it('marks the tool card as errored when isError is true', () => {
     let state = run([

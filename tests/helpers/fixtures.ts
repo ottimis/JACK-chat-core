@@ -77,8 +77,16 @@ export function assistantMsg(blocks: NormalizedBlock[]): NormalizedMessage {
   return { kind: 'assistant', blocks, raw: {} }
 }
 
-export function userMsg(blocks: NormalizedBlock[]): NormalizedMessage {
-  return { kind: 'user', blocks, raw: {} }
+export function userMsg(
+  blocks: NormalizedBlock[],
+  opts: { messageId?: string } = {}
+): NormalizedMessage {
+  return {
+    kind: 'user',
+    blocks,
+    ...(opts.messageId ? { messageId: opts.messageId } : {}),
+    raw: {}
+  }
 }
 
 export function turnResultSuccess(): NormalizedMessage {

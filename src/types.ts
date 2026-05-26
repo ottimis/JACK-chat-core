@@ -31,6 +31,19 @@ export type ChatMessageType =
 export type ChatMessage = {
   id: string
   type: ChatMessageType
+  /**
+   * Stable per-message id assigned by the provider's transcript (Claude
+   * JSONL `uuid`, Codex `item.id`). Surfaced on the chat row when the
+   * source event carries it (`NormalizedMessage.messageId`). The renderer
+   * uses it as `upToMessageId` when asking the provider to fork at a
+   * specific point — `id` alone is a synthetic counter and would never
+   * match the provider's transcript.
+   *
+   * `undefined` when the message originated locally and hasn't been echoed
+   * back by the provider yet (e.g. an optimistic `user-prompt` bubble
+   * before the wire roundtrip lands the corresponding `kind: 'user'`).
+   */
+  providerMessageId?: string
   content: string
   thinking?: string
   /**

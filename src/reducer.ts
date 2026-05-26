@@ -325,7 +325,7 @@ function applySdkMessage(
     case 'assistant':
       return applyAssistantFinal(state, message.blocks, ctx)
     case 'user':
-      return applyUserMessage(state, message.blocks, ctx)
+      return applyUserMessage(state, message.blocks, ctx, message.messageId)
     case 'turn_result': {
       const next: ChatState = {
         ...state,
@@ -704,7 +704,8 @@ function applyAssistantFinal(
 function applyUserMessage(
   state: ChatState,
   blocks: NormalizedBlock[],
-  ctx: ReduceContext
+  ctx: ReduceContext,
+  providerMessageId?: string
 ): ChatState {
   let next = state
   const textBlobs: string[] = []
@@ -778,6 +779,7 @@ function applyUserMessage(
             ...(envelope.commandStdout !== undefined
               ? { commandStdout: envelope.commandStdout }
               : {}),
+            ...(providerMessageId ? { providerMessageId } : {}),
             timestamp: ctx.now()
           }
         ]
@@ -785,20 +787,20 @@ function applyUserMessage(
       // Chips paired with a slash envelope still deserve to render — emit
       // them as a separate user bubble so the slash card stays clean.
       if (chips.length > 0) {
-        next = appendChipOnlyUserBubble(next, chips, ctx)
+        next = appendChipOnlyUserBubble(next, chips, ctx, providerMessageId)
       }
     } else if (chips.length > 0) {
       // Non-slash synthetic user text WITH chips — emit a chip-bearing
       // user bubble. (Plain non-slash text without chips is dropped to
       // preserve current behavior: live applyUserMessage doesn't echo
       // user-typed content, that path is owned by `user-prompt`.)
-      next = appendChipBearingUserBubble(next, text, chips, ctx)
+      next = appendChipBearingUserBubble(next, text, chips, ctx, providerMessageId)
     }
   }
 
   // Pure chip extractions from text blocks that were fully stripped.
   if (chipBlobs.length > 0) {
-    next = appendChipOnlyUserBubble(next, chipBlobs, ctx)
+    next = appendChipOnlyUserBubble(next, chipBlobs, ctx, providerMessageId)
   }
 
   return next
@@ -807,7 +809,8 @@ function applyUserMessage(
 function appendChipOnlyUserBubble(
   state: ChatState,
   chips: readonly ParsedChip[],
-  ctx: ReduceContext
+  ctx: ReduceContext,
+  providerMessageId?: string
 ): ChatState {
   const { state: s2, id } = bumpId(state)
   return {
@@ -819,6 +822,7 @@ function appendChipOnlyUserBubble(
         type: 'user',
         content: '',
         chips,
+        ...(providerMessageId ? { providerMessageId } : {}),
         timestamp: ctx.now()
       }
     ]
@@ -829,7 +833,8 @@ function appendChipBearingUserBubble(
   state: ChatState,
   text: string,
   chips: readonly ParsedChip[],
-  ctx: ReduceContext
+  ctx: ReduceContext,
+  providerMessageId?: string
 ): ChatState {
   const { state: s2, id } = bumpId(state)
   return {
@@ -841,6 +846,7 @@ function appendChipBearingUserBubble(
         type: 'user',
         content: text,
         chips,
+        ...(providerMessageId ? { providerMessageId } : {}),
         timestamp: ctx.now()
       }
     ]
@@ -1036,6 +1042,7 @@ export function loadHistory(
       const text = applyUserContentPolicy(rawText, ctx.userContentPolicy)
       if (!text && chips.length === 0) continue
 
+      const providerMessageId = msg.messageId
       const envelope = text ? ctx.parseSlashEnvelope?.(text) : null
       if (envelope) {
         const { state: s2, id } = bumpId(state)
@@ -1052,6 +1059,7 @@ export function loadHistory(
               ...(envelope.commandStdout !== undefined
                 ? { commandStdout: envelope.commandStdout }
                 : {}),
+              ...(providerMessageId ? { providerMessageId } : {}),
               timestamp: 0
             }
           ]
@@ -1063,7 +1071,14 @@ export function loadHistory(
             ...s3,
             messages: [
               ...s3.messages,
-              { id: chipId, type: 'user', content: '', chips, timestamp: 0 }
+              {
+                id: chipId,
+                type: 'user',
+                content: '',
+                chips,
+                ...(providerMessageId ? { providerMessageId } : {}),
+                timestamp: 0
+              }
             ]
           }
         }
@@ -1078,6 +1093,7 @@ export function loadHistory(
               type: 'user',
               content: text,
               ...(chips.length > 0 ? { chips } : {}),
+              ...(providerMessageId ? { providerMessageId } : {}),
               timestamp: 0
             }
           ]
@@ -1089,7 +1105,17 @@ export function loadHistory(
         const { state: s2, id } = bumpId(state)
         state = {
           ...s2,
-          messages: [...s2.messages, { id, type: 'user', content: '', chips, timestamp: 0 }]
+          messages: [
+            ...s2.messages,
+            {
+              id,
+              type: 'user',
+              content: '',
+              chips,
+              ...(providerMessageId ? { providerMessageId } : {}),
+              timestamp: 0
+            }
+          ]
         }
       }
       continue
