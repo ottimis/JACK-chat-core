@@ -94,6 +94,20 @@ export type ChatMessage = {
   /** 'ok' → success tint, 'error' → warning tint. */
   feedbackStatus?: 'ok' | 'error'
   contextUsage?: ContextUsageInfo
+  /**
+   * Concrete model id reported by the provider for this assistant turn
+   * (e.g. `claude-opus-4-8`). Surfaces the *resolved* version when the
+   * user-facing model selection is a family alias like `opus`, which by
+   * itself doesn't disclose which version actually ran. Sourced from
+   * `NormalizedMessage.kind === 'assistant'`'s `model` field — the
+   * provider populates it from its native event shape (Claude:
+   * `assistant.message.model`; Codex: `turn.completed.model`; etc.).
+   *
+   * Populated only on `type === 'assistant'` rows. Optional — providers
+   * that don't expose the per-turn model in their normalized envelope
+   * simply leave it unset.
+   */
+  model?: string
   timestamp: number
   streaming?: boolean
 }

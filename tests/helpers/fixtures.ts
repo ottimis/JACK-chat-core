@@ -73,8 +73,16 @@ export function toolResult(
   return { type: 'tool_result', toolUseId, isError, content }
 }
 
-export function assistantMsg(blocks: NormalizedBlock[]): NormalizedMessage {
-  return { kind: 'assistant', blocks, raw: {} }
+export function assistantMsg(
+  blocks: NormalizedBlock[],
+  opts: { model?: string } = {}
+): NormalizedMessage {
+  return {
+    kind: 'assistant',
+    blocks,
+    ...(opts.model ? { model: opts.model } : {}),
+    raw: {}
+  }
 }
 
 export function userMsg(

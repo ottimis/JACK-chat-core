@@ -145,6 +145,50 @@ describe('reducer — streaming assistant turn', () => {
     assert.equal(state.messages[0]!.content, 'Hello')
   })
 
+  it('stamps assistant.model on the streaming row when final lands (Claude shape)', () => {
+    // Regression: family-aliased model selections (`opus`, `sonnet`) get
+    // resolved server-side to a concrete id (`claude-opus-4-8`). The host
+    // needs that id to surface "what's actually running" in the Model
+    // dropdown tooltip. The reducer copies it from the final assistant
+    // envelope onto the streaming-built ChatMessage so the renderer can
+    // read it without scanning provider-specific telemetry.
+    const state = run([
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'text' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hi' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 0 }) },
+      { kind: 'sdk', message: assistantMsg([textBlock('Hi')], { model: 'claude-opus-4-8' }) }
+    ])
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.model, 'claude-opus-4-8')
+  })
+
+  it('stamps assistant.model on a fresh row for non-streaming providers (Codex shape)', () => {
+    const noStreamCtx: ReduceContext = {
+      now: () => 1_000_000,
+      providerHasPartialStreaming: false
+    }
+    const state = run(
+      [{ kind: 'sdk', message: assistantMsg([textBlock('Ciao')], { model: 'gpt-5-codex' }) }],
+      noStreamCtx
+    )
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.model, 'gpt-5-codex')
+  })
+
+  it('leaves assistant.model unset when the provider envelope omits it', () => {
+    // Graceful degradation: Codex doesn't emit per-turn model today, so the
+    // tooltip simply shows no "running" line. Reducer must not invent a
+    // value or carry over a previous turn's model unrelated to this one.
+    const state = run([
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'text' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hi' } }) },
+      { kind: 'sdk', message: claudeStream({ type: 'content_block_stop', index: 0 }) },
+      { kind: 'sdk', message: assistantMsg([textBlock('Hi')]) }
+    ])
+    assert.equal(state.messages.length, 1)
+    assert.equal(state.messages[0]!.model, undefined)
+  })
+
   it('marks tool as done on matching tool_result', () => {
     let state = run([
       { kind: 'sdk', message: claudeStream({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_1', name: 'Read' } }) },

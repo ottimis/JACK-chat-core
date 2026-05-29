@@ -323,7 +323,7 @@ function applySdkMessage(
     case 'partial_event':
       return applyPartialEvent(state, message.raw, ctx)
     case 'assistant':
-      return applyAssistantFinal(state, message.blocks, ctx)
+      return applyAssistantFinal(state, message.blocks, ctx, message.model)
     case 'user':
       return applyUserMessage(state, message.blocks, ctx, message.messageId)
     case 'turn_result': {
@@ -594,7 +594,8 @@ function applyStreamEvent(
 function applyAssistantFinal(
   state: ChatState,
   blocks: NormalizedBlock[],
-  ctx: ReduceContext
+  ctx: ReduceContext,
+  model?: string
 ): ChatState {
   let next = state
 
@@ -622,6 +623,7 @@ function applyAssistantFinal(
             type: 'assistant' as const,
             content: texts,
             ...(thinking ? { thinking } : {}),
+            ...(model ? { model } : {}),
             timestamp: ctx.now()
           }
         ]
@@ -698,6 +700,43 @@ function applyAssistantFinal(
       }
     }
   }
+
+  // Stamp the per-turn `model` onto the most recent assistant row(s) that
+  // belong to this turn. For streaming providers the text/thinking rows
+  // were created during `applyStreamEvent` and don't yet know which model
+  // ran them — the value only lands here. Strategy:
+  //  - If `currentAssistantId` is set, patch that row directly (the latest
+  //    streaming text bubble of the turn).
+  //  - Else, walk back from the end and patch the most recent assistant
+  //    row encountered before any user/system boundary. Cross-turn
+  //    misattribution is intentionally accepted: the tooltip only needs
+  //    the *latest* model, not perfect per-message provenance.
+  // No-op when `model` is undefined (provider didn't emit one in this
+  // envelope) — previous rows keep whatever they had.
+  if (model) {
+    const targetId = next.currentAssistantId
+    if (targetId && next.messages.some((m) => m.id === targetId && m.type === 'assistant')) {
+      next = {
+        ...next,
+        messages: next.messages.map((m) =>
+          m.id === targetId ? { ...m, model } : m
+        )
+      }
+    } else {
+      for (let i = next.messages.length - 1; i >= 0; i--) {
+        const m = next.messages[i]
+        if (!m) break
+        if (m.type === 'user' || m.type === 'system') break
+        if (m.type === 'assistant') {
+          const patched = next.messages.slice()
+          patched[i] = { ...m, model }
+          next = { ...next, messages: patched }
+          break
+        }
+      }
+    }
+  }
+
   return next
 }
 
@@ -1145,6 +1184,7 @@ export function loadHistory(
               type: 'assistant',
               content: texts,
               ...(thinkingTexts ? { thinking: thinkingTexts } : {}),
+              ...(msg.model ? { model: msg.model } : {}),
               timestamp: 0
             }
           ]
