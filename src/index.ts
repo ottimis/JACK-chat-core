@@ -34,6 +34,14 @@ export {
   pickStr,
   stripWrapperTags
 } from './helpers.js'
+export {
+  DEFAULT_HOST_CONTENT_POLICY,
+  ROOM_BODY_TAG,
+  ROOM_MESSAGE_TAG,
+  ROOM_MESSAGE_TAG_SPEC,
+  ROOM_NOTICE_TAG,
+  ROOM_NOTICE_TAG_SPEC
+} from './room-tags.js'
 export { applyTaskTool } from './task-list.js'
 export { createInitialState, loadHistory, reduce } from './reducer.js'
 export type { ReduceContext } from './reducer.js'

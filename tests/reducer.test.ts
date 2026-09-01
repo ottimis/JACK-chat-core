@@ -4,6 +4,7 @@ import { createInitialState, reduce, loadHistory } from '../src/reducer.js'
 import type { ReduceContext } from '../src/reducer.js'
 import type { AgentEvent, ParsedSlashEnvelope } from '../src/types.js'
 import type { NormalizedMessage } from '../src/normalized.js'
+import { DEFAULT_HOST_CONTENT_POLICY } from '../src/room-tags.js'
 import {
   assistantMsg,
   claudeStream,
@@ -554,6 +555,40 @@ describe('reducer — userContentPolicy (provider-declared tag stripping)', () =
     assert.equal(m.type, 'user')
     assert.equal(m.content, '')
     assert.equal(m.chips?.[0]?.fields.status, 'completed')
+  })
+
+  it('renders a room envelope end to end with DEFAULT_HOST_CONTENT_POLICY', () => {
+    // The shipped constant, not a hand-rolled copy: this is the wiring the
+    // three host consumers collapse onto in 0.11.0. Both entry points, because
+    // a live delivery and a transcript replay are two different call sites and
+    // forgetting one renders raw XML on reload.
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      hostContentPolicy: DEFAULT_HOST_CONTENT_POLICY
+    }
+    const envelope =
+      '<jack-room-message room-id="rm-1" room="CVE triage" from="codex-reviewer"' +
+      ' from-role="reviewer" kind="challenge" message-id="msg-42" seq="7" wakes-left="3">' +
+      '\nCoordination message from agent `codex-reviewer`.\n' +
+      '<jack-room-body>Needs a regression test.</jack-room-body>\n</jack-room-message>'
+    const text = `${envelope}\n\nAnd my own prompt.`
+
+    for (const state of [
+      run([{ kind: 'sdk', message: userMsg([textBlock(text)]) }], policyCtx),
+      loadHistory([userMsg([textBlock(text)])], SID, policyCtx)
+    ]) {
+      assert.equal(state.messages.length, 1)
+      const m = state.messages[0]!
+      assert.equal(m.type, 'user')
+      assert.equal(m.content, 'And my own prompt.')
+      assert.equal(m.chips?.length, 1)
+      const chip = m.chips![0]!
+      assert.equal(chip.tag, 'jack-room-message')
+      assert.equal(chip.chipKind, 'room')
+      assert.equal(chip.attributes?.['message-id'], 'msg-42')
+      assert.equal(chip.attributes?.['wakes-left'], '3')
+      assert.equal(chip.fields.body, 'Needs a regression test.')
+    }
   })
 
   it('recognises a host-declared wrapper for a provider with no userContent policy (live)', () => {

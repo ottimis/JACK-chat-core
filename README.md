@@ -5,7 +5,7 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 ## What this package contains
 
 - **Types** — `ChatMessage`, `ChatState`, `TaskItem`, the provider-neutral message contract (`NormalizedMessage`, `NormalizedBlock`, `NormalizedToolRef`, `ToolShape`, …), plus the preload-level contracts (`FileChangeData`, `PermissionRequestData`, `ContextUsageInfo`, `SlashCommandDef`).
-- **Pure helpers** — `isJackTaskTool`, `isTaskTool` (deprecated), `pickStr`, plus the user-content policy utilities (`stripWrapperTags`, `applyUserContentPolicy`, `extractInfoChips`, `mergeUserContentPolicies`). Slash-command parsing is no longer in this package — see `ReduceContext.parseSlashEnvelope` / `ReduceContext.isCliMarkerOnly` callbacks for the provider injection point.
+- **Pure helpers** — `isJackTaskTool`, `isTaskTool` (deprecated), `pickStr`, plus the user-content policy utilities (`stripWrapperTags`, `applyUserContentPolicy`, `extractInfoChips`, `mergeUserContentPolicies`) and the host room-tag vocabulary (`DEFAULT_HOST_CONTENT_POLICY`, `ROOM_MESSAGE_TAG_SPEC`, `ROOM_NOTICE_TAG_SPEC`). Slash-command parsing is no longer in this package — see `ReduceContext.parseSlashEnvelope` / `ReduceContext.isCliMarkerOnly` callbacks for the provider injection point.
 - **Reducer** — `createInitialState()` + `reduce(state, event, ctx?)` that consumes provider-neutral `NormalizedMessage`s plus out-of-band events (permission, file change, error) and produces the list of message bubbles the UI renders. `ctx` carries the host clock and optional provider-specific text parsers.
 - **History loader** — `loadHistory(rawMessages, sessionId, ctx?)` that replays a transcript expressed as `NormalizedMessage[]` into a starting `ChatMessage[]`. Slash envelope detection and CLI-marker filtering happen only when the matching ctx callbacks are injected.
 
@@ -27,6 +27,20 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 | `permission-resolved` | client  | User decided an inline permission: deny removes card, allow marks streaming |
 | `interrupt`           | client  | User stopped the turn — reset runtime flags, keep messages              |
 
+## 0.11.0
+
+Additive: chat-core now **exports the Coordination Rooms vocabulary**, not just the mechanism 0.10.0 shipped.
+
+- `ROOM_MESSAGE_TAG_SPEC` / `ROOM_NOTICE_TAG_SPEC` — the two host `InfoWrapperTagSpec`s, and `DEFAULT_HOST_CONTENT_POLICY`, the `HostContentPolicy` containing both. Pass it straight through as `ReduceContext.hostContentPolicy`.
+- `ROOM_MESSAGE_TAG`, `ROOM_NOTICE_TAG`, `ROOM_BODY_TAG` — the tag names, for hosts that also *compose* envelopes.
+- All frozen: they are process-wide singletons, so a consumer that pushed onto `infoWrapperTags` would change what every other call site parses. Extend by spreading, not by mutating.
+
+**Why.** 0.10.0 said "chat-core ships the mechanism, not the vocabulary". Three consumers then declared the same tag independently — jack main `src/main/rooms/envelope.ts`, jack renderer and jack-mobile `roomContentPolicy.ts` — which diverges the first time an attribute or a field name changes. The tags stay *owned* by the host (`_shared/api/coordination-rooms.md` §3 defines them, including the escaping invariants the composing side must satisfy); this package just holds the one copy everybody parses against.
+
+Only the parsing half lives here. Nothing in this package composes an envelope: attribution, the disclaimer and the body neutralisation are host-side, and that is the whole anti-impersonation guarantee.
+
+No breaking changes — a host that keeps its own literal declaration compiles unchanged.
+
 ## 0.10.0
 
 Additive: **host-canonical wrapper tags**. Until now every wrapper tag (hidden or info) came from the active provider's `userContent` policy. Envelopes the *host* writes around content it injects — Coordination Rooms' `<jack-room-message …>` is the driving case — must be recognised whatever provider the session runs on, which a provider-supplied policy structurally cannot guarantee.
@@ -38,7 +52,7 @@ Additive: **host-canonical wrapper tags**. Until now every wrapper tag (hidden o
 - Wrapper tags may now carry **attributes** on the opening tag (`<jack-room-message room="r-1" from="codex-reviewer">`). They are stripped as before, and `ParsedChip` gains an optional `attributes: Record<string, string>` (unquoted, XML-entity-decoded, present only when the tag carried at least one `name="value"` pair). Attribute values may not contain `>`. A tag without attributes matches as it always did, and `<env>` still never matches `<environment>`.
 - `ChipKind` gains `'room'`.
 
-No breaking changes — existing 0.9.0 consumers keep compiling. Hosts that want the host-level tags pass `hostContentPolicy` in `ReduceContext`; the tag names and attributes themselves stay host-side (chat-core ships the mechanism, not the vocabulary).
+No breaking changes — existing 0.9.0 consumers keep compiling. Hosts that want the host-level tags pass `hostContentPolicy` in `ReduceContext`. At this version the tag names themselves were still host-side; 0.11.0 exports them (see above).
 
 ## 0.5.0
 
