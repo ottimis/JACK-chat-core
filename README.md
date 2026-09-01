@@ -5,7 +5,7 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 ## What this package contains
 
 - **Types** — `ChatMessage`, `ChatState`, `TaskItem`, the provider-neutral message contract (`NormalizedMessage`, `NormalizedBlock`, `NormalizedToolRef`, `ToolShape`, …), plus the preload-level contracts (`FileChangeData`, `PermissionRequestData`, `ContextUsageInfo`, `SlashCommandDef`).
-- **Pure helpers** — `isJackTaskTool`, `isTaskTool` (deprecated), `pickStr`. Slash-command parsing is no longer in this package — see `ReduceContext.parseSlashEnvelope` / `ReduceContext.isCliMarkerOnly` callbacks for the provider injection point.
+- **Pure helpers** — `isJackTaskTool`, `isTaskTool` (deprecated), `pickStr`, plus the user-content policy utilities (`stripWrapperTags`, `applyUserContentPolicy`, `extractInfoChips`, `mergeUserContentPolicies`). Slash-command parsing is no longer in this package — see `ReduceContext.parseSlashEnvelope` / `ReduceContext.isCliMarkerOnly` callbacks for the provider injection point.
 - **Reducer** — `createInitialState()` + `reduce(state, event, ctx?)` that consumes provider-neutral `NormalizedMessage`s plus out-of-band events (permission, file change, error) and produces the list of message bubbles the UI renders. `ctx` carries the host clock and optional provider-specific text parsers.
 - **History loader** — `loadHistory(rawMessages, sessionId, ctx?)` that replays a transcript expressed as `NormalizedMessage[]` into a starting `ChatMessage[]`. Slash envelope detection and CLI-marker filtering happen only when the matching ctx callbacks are injected.
 
@@ -26,6 +26,19 @@ Transport-agnostic reducer and type definitions for the Jack chat UI. Shared bet
 | `slash-invocation`    | client  | User invoked a slash command (built-in or unknown), append chip         |
 | `permission-resolved` | client  | User decided an inline permission: deny removes card, allow marks streaming |
 | `interrupt`           | client  | User stopped the turn — reset runtime flags, keep messages              |
+
+## 0.10.0
+
+Additive: **host-canonical wrapper tags**. Until now every wrapper tag (hidden or info) came from the active provider's `userContent` policy. Envelopes the *host* writes around content it injects — Coordination Rooms' `<jack-room-message …>` is the driving case — must be recognised whatever provider the session runs on, which a provider-supplied policy structurally cannot guarantee.
+
+- `ReduceContext.hostContentPolicy?: HostContentPolicy` — host-declared `hiddenWrapperTags` / `infoWrapperTags`, same shape as `ProviderUserContentPolicy`. Merged over the provider policy before any stripping or chip extraction.
+- `applyUserContentPolicy(text, policy, hostPolicy?)` and `extractInfoChips(text, policy, hostPolicy?)` take the host policy as an optional third argument — existing two-argument calls behave exactly as before.
+- `mergeUserContentPolicies(hostPolicy, providerPolicy)` is exported for consumers that apply the policy outside the reducer (provider transcript readers, mobile renderers). Host entries come first and **win on a tag-name collision**, across both axes; with no host entries it returns the provider policy by reference.
+- **The `jack-` prefix (`JACK_HOST_TAG_PREFIX`) is reserved for host-authored tags.** Provider packages must not declare tags starting with it. Not enforced at runtime — `<jack-system>` predates the split and is still declared through a provider policy, so rejecting the prefix there would be a breaking change — the merge precedence is the backstop.
+- Wrapper tags may now carry **attributes** on the opening tag (`<jack-room-message room="r-1" from="codex-reviewer">`). They are stripped as before, and `ParsedChip` gains an optional `attributes: Record<string, string>` (unquoted, XML-entity-decoded, present only when the tag carried at least one `name="value"` pair). Attribute values may not contain `>`. A tag without attributes matches as it always did, and `<env>` still never matches `<environment>`.
+- `ChipKind` gains `'room'`.
+
+No breaking changes — existing 0.9.0 consumers keep compiling. Hosts that want the host-level tags pass `hostContentPolicy` in `ReduceContext`; the tag names and attributes themselves stay host-side (chat-core ships the mechanism, not the vocabulary).
 
 ## 0.5.0
 

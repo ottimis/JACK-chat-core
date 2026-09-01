@@ -556,6 +556,71 @@ describe('reducer — userContentPolicy (provider-declared tag stripping)', () =
     assert.equal(m.chips?.[0]?.fields.status, 'completed')
   })
 
+  it('recognises a host-declared wrapper for a provider with no userContent policy (live)', () => {
+    // The room envelope is host-authored, so it must be stripped and chipped
+    // even when the session's provider ships no policy of its own.
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      hostContentPolicy: {
+        infoWrapperTags: [
+          { tag: 'jack-room-message', label: 'Room message', chipKind: 'room' }
+        ]
+      }
+    }
+    const state = run(
+      [
+        {
+          kind: 'sdk',
+          message: userMsg([
+            textBlock(
+              '<jack-room-message room="r-1" from="codex-reviewer">Peer claim.</jack-room-message>\n\nAnd my own prompt.'
+            )
+          ])
+        }
+      ],
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.content, 'And my own prompt.')
+    assert.equal(m.chips?.length, 1)
+    assert.equal(m.chips![0]!.chipKind, 'room')
+    assert.equal(m.chips![0]!.attributes?.from, 'codex-reviewer')
+    assert.equal(m.chips![0]!.raw, 'Peer claim.')
+  })
+
+  it('merges host and provider wrappers on transcript replay (loadHistory)', () => {
+    const policyCtx: ReduceContext = {
+      now: () => 1_000_000,
+      userContentPolicy: {
+        hiddenWrapperTags: ['environment_context'],
+        infoWrapperTags: [{ tag: 'env', label: 'Env', chipKind: 'env' }]
+      },
+      hostContentPolicy: {
+        infoWrapperTags: [{ tag: 'jack-room-message', label: 'Room', chipKind: 'room' }]
+      }
+    }
+    const state = loadHistory(
+      [
+        userMsg([
+          textBlock(
+            '<environment_context><cwd>/proj</cwd></environment_context>\n' +
+              '<jack-room-message id="m-7">Peer claim.</jack-room-message>\n' +
+              '<env>cwd=/proj</env>\n' +
+              'Do the thing.'
+          )
+        ])
+      ],
+      SID,
+      policyCtx
+    )
+    assert.equal(state.messages.length, 1)
+    const m = state.messages[0]!
+    assert.equal(m.content, 'Do the thing.')
+    assert.deepEqual(m.chips?.map((c) => c.tag), ['jack-room-message', 'env'])
+    assert.equal(m.chips![0]!.attributes?.id, 'm-7')
+  })
+
   it('emits one chip per occurrence when the wrapper appears multiple times', () => {
     const policyCtx: ReduceContext = {
       now: () => 1_000_000,

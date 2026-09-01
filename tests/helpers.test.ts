@@ -6,10 +6,11 @@ import {
   isTaskTool,
   isJackTaskTool,
   isTaskCoordinationTool,
+  mergeUserContentPolicies,
   stripWrapperTags
 } from '../src/helpers.js'
 import type { NormalizedToolRef } from '../src/normalized.js'
-import type { ProviderUserContentPolicy } from '../src/types.js'
+import type { HostContentPolicy, ProviderUserContentPolicy } from '../src/types.js'
 
 describe('isTaskTool (deprecated)', () => {
   it('recognises task-family tools', () => {
@@ -262,5 +263,207 @@ describe('applyUserContentPolicy + extractInfoChips interaction', () => {
     assert.equal(chips[0]!.fields.status, 'ok')
     // And the visible text is the residual.
     assert.equal(applyUserContentPolicy(input, policy), 'Rest.')
+  })
+})
+
+// ─── Host-canonical wrapper tags ─────────────────────────────────────────────
+//
+// The host writes `<jack-room-message …>` around Coordination Rooms deliveries
+// for every provider, so recognising it cannot depend on the provider's
+// `userContent` policy. These cover the merge precedence and the attribute
+// parsing that a host-authored envelope needs.
+
+/** Stand-in for the room envelope; the real shape lives in the API contract. */
+const ROOM_TAG = 'jack-room-message'
+
+const hostPolicy: HostContentPolicy = {
+  infoWrapperTags: [
+    {
+      tag: ROOM_TAG,
+      label: 'Room message',
+      chipKind: 'room',
+      fields: [{ name: 'body', from: 'body' }]
+    }
+  ]
+}
+
+describe('mergeUserContentPolicies', () => {
+  it('returns the provider policy untouched when the host declares nothing', () => {
+    const provider: ProviderUserContentPolicy = { hiddenWrapperTags: ['env'] }
+    assert.equal(mergeUserContentPolicies(undefined, provider), provider)
+    assert.equal(mergeUserContentPolicies({}, provider), provider)
+    assert.equal(
+      mergeUserContentPolicies({ hiddenWrapperTags: [], infoWrapperTags: [] }, provider),
+      provider
+    )
+    // "No policy at all" stays undefined — the callers' fast path.
+    assert.equal(mergeUserContentPolicies(undefined, undefined), undefined)
+  })
+
+  it('yields the host policy alone when the provider declares nothing', () => {
+    const merged = mergeUserContentPolicies(hostPolicy, undefined)
+    assert.deepEqual(merged?.infoWrapperTags?.map((s) => s.tag), [ROOM_TAG])
+    assert.equal(merged?.hiddenWrapperTags, undefined)
+  })
+
+  it('unions both axes with host entries first', () => {
+    const provider: ProviderUserContentPolicy = {
+      hiddenWrapperTags: ['environment_context'],
+      infoWrapperTags: [{ tag: 'task-notification', label: 'Background' }]
+    }
+    const merged = mergeUserContentPolicies(
+      { ...hostPolicy, hiddenWrapperTags: ['jack-system'] },
+      provider
+    )
+    assert.deepEqual(merged?.hiddenWrapperTags, ['jack-system', 'environment_context'])
+    assert.deepEqual(merged?.infoWrapperTags?.map((s) => s.tag), [
+      ROOM_TAG,
+      'task-notification'
+    ])
+  })
+
+  it('host wins on a tag-name collision', () => {
+    const provider: ProviderUserContentPolicy = {
+      infoWrapperTags: [{ tag: ROOM_TAG, label: 'Provider impostor', chipKind: 'other' }]
+    }
+    const merged = mergeUserContentPolicies(hostPolicy, provider)
+    assert.equal(merged?.infoWrapperTags?.length, 1)
+    assert.equal(merged?.infoWrapperTags?.[0]!.label, 'Room message')
+  })
+
+  it('collision check spans both axes (host info drops provider hidden of same name)', () => {
+    const provider: ProviderUserContentPolicy = { hiddenWrapperTags: [ROOM_TAG, 'env'] }
+    const merged = mergeUserContentPolicies(hostPolicy, provider)
+    assert.deepEqual(merged?.hiddenWrapperTags, ['env'])
+    assert.deepEqual(merged?.infoWrapperTags?.map((s) => s.tag), [ROOM_TAG])
+  })
+
+  it('collapses duplicates inside the host lists', () => {
+    const merged = mergeUserContentPolicies(
+      { hiddenWrapperTags: ['jack-system', 'jack-system'] },
+      undefined
+    )
+    assert.deepEqual(merged?.hiddenWrapperTags, ['jack-system'])
+  })
+})
+
+describe('wrapper tags with attributes', () => {
+  const envelope =
+    `<${ROOM_TAG} room="r-1" from="codex-reviewer" kind="challenge" id="m-7">\n` +
+    'Coordination message from agent `codex-reviewer`.\n' +
+    '<body>The auth check is reachable pre-session.</body>\n' +
+    `</${ROOM_TAG}>`
+
+  it('strips an opening tag that carries attributes', () => {
+    assert.equal(stripWrapperTags(`${envelope}\nRest.`, [ROOM_TAG]), 'Rest.')
+  })
+
+  it('still anchors on the full tag name', () => {
+    // `<environment>` must not be eaten by a declaration for `env`.
+    assert.equal(stripWrapperTags('<environment>x</environment>', ['env']),
+      '<environment>x</environment>')
+  })
+
+  it('parses attributes onto the chip', () => {
+    const chips = extractInfoChips(envelope, undefined, hostPolicy)
+    assert.equal(chips.length, 1)
+    const c = chips[0]!
+    assert.equal(c.chipKind, 'room')
+    assert.deepEqual(c.attributes, {
+      room: 'r-1',
+      from: 'codex-reviewer',
+      kind: 'challenge',
+      id: 'm-7'
+    })
+    assert.equal(c.fields.body, 'The auth check is reachable pre-session.')
+  })
+
+  it('omits `attributes` entirely for an attribute-less tag', () => {
+    const chips = extractInfoChips('<env><cwd>/proj</cwd></env>', {
+      infoWrapperTags: [{ tag: 'env', label: 'Env' }]
+    })
+    assert.equal(chips[0]!.attributes, undefined)
+  })
+
+  it('accepts single-quoted, double-quoted and bare values, and decodes entities', () => {
+    const chips = extractInfoChips(
+      `<${ROOM_TAG} room='r 2' seq=12 title="a &amp; b &quot;q&quot;">x</${ROOM_TAG}>`,
+      undefined,
+      hostPolicy
+    )
+    assert.deepEqual(chips[0]!.attributes, {
+      room: 'r 2',
+      seq: '12',
+      title: 'a & b "q"'
+    })
+  })
+
+  it('keeps the first occurrence of a repeated attribute', () => {
+    const chips = extractInfoChips(
+      `<${ROOM_TAG} room="first" room="second">x</${ROOM_TAG}>`,
+      undefined,
+      hostPolicy
+    )
+    assert.equal(chips[0]!.attributes!.room, 'first')
+  })
+
+  it('does not let an attribute named __proto__ poison the chip', () => {
+    const chips = extractInfoChips(
+      `<${ROOM_TAG} __proto__="polluted" room="r-1">x</${ROOM_TAG}>`,
+      undefined,
+      hostPolicy
+    )
+    const attrs = chips[0]!.attributes!
+    assert.equal(Object.getPrototypeOf(attrs), Object.prototype)
+    assert.equal(Object.getOwnPropertyDescriptor(attrs, '__proto__')?.value, 'polluted')
+    assert.equal(attrs.room, 'r-1')
+    assert.equal(({} as Record<string, unknown>).polluted, undefined)
+  })
+})
+
+describe('host policy in extractInfoChips / applyUserContentPolicy', () => {
+  const provider: ProviderUserContentPolicy = {
+    hiddenWrapperTags: ['environment_context'],
+    infoWrapperTags: [
+      { tag: 'task-notification', label: 'Background', chipKind: 'task' }
+    ]
+  }
+  const input =
+    '<environment_context><cwd>/proj</cwd></environment_context>\n' +
+    `<${ROOM_TAG} room="r-1" from="alice"><body>hello</body></${ROOM_TAG}>\n` +
+    '<task-notification>done</task-notification>\n' +
+    'Visible prose.'
+
+  it('recognises the host tag when the provider ships no userContent policy', () => {
+    const chips = extractInfoChips(input, undefined, hostPolicy)
+    assert.deepEqual(chips.map((c) => c.tag), [ROOM_TAG])
+    // Only the host wrapper goes; the provider's own tags stay (it declared
+    // none) and the strip leaves the blank line the wrapper occupied.
+    assert.equal(applyUserContentPolicy(input, undefined, hostPolicy),
+      '<environment_context><cwd>/proj</cwd></environment_context>\n\n' +
+      '<task-notification>done</task-notification>\nVisible prose.')
+  })
+
+  it('merges host and provider tags in one pass', () => {
+    const chips = extractInfoChips(input, provider, hostPolicy)
+    assert.deepEqual(chips.map((c) => c.tag), [ROOM_TAG, 'task-notification'])
+    assert.equal(applyUserContentPolicy(input, provider, hostPolicy), 'Visible prose.')
+  })
+
+  it('is a no-op when no host policy is passed (pre-0.10 behaviour)', () => {
+    const chips = extractInfoChips(input, provider)
+    assert.deepEqual(chips.map((c) => c.tag), ['task-notification'])
+    // The host envelope stays in the visible text — exactly the gap this API closes.
+    assert.match(applyUserContentPolicy(input, provider), new RegExp(ROOM_TAG))
+  })
+
+  it('a provider cannot hijack a host tag', () => {
+    const impostor: ProviderUserContentPolicy = {
+      infoWrapperTags: [{ tag: ROOM_TAG, label: 'Impostor', chipKind: 'other' }]
+    }
+    const chips = extractInfoChips(input, impostor, hostPolicy)
+    assert.equal(chips.length, 1)
+    assert.equal(chips[0]!.label, 'Room message')
+    assert.equal(chips[0]!.chipKind, 'room')
   })
 })

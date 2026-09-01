@@ -14,6 +14,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatState,
+  HostContentPolicy,
   ParsedChip,
   ParsedSlashEnvelope,
   ProviderUserContentPolicy,
@@ -100,6 +101,19 @@ export type ReduceContext = {
    * session at render time.
    */
   userContentPolicy?: ProviderUserContentPolicy
+  /**
+   * Host-declared wrapper tags, merged over `userContentPolicy` before any
+   * stripping or chip extraction (`mergeUserContentPolicies`). These are
+   * envelopes the *host* writes around content it injects into a session —
+   * Coordination Rooms' `<jack-room-message>` is the driving case — so they
+   * must be recognised whatever provider the session runs on, which a
+   * provider-supplied policy structurally cannot guarantee.
+   *
+   * Host declarations win on a tag-name collision; the `jack-` prefix is
+   * reserved for them (`JACK_HOST_TAG_PREFIX`). Omitting the field leaves
+   * behaviour identical to a provider-only policy.
+   */
+  hostContentPolicy?: HostContentPolicy
 }
 
 const defaultCtx: ReduceContext = { now: () => Date.now() }
@@ -788,8 +802,12 @@ function applyUserMessage(
       // sanitized text. When the policy strips everything but `infoWrapperTags`
       // matched, we still surface a chip-only bubble so the user sees the
       // async event (e.g. a background bash completion) the model just received.
-      const chips = extractInfoChips(block.text, ctx.userContentPolicy)
-      const cleaned = applyUserContentPolicy(block.text, ctx.userContentPolicy)
+      const chips = extractInfoChips(block.text, ctx.userContentPolicy, ctx.hostContentPolicy)
+      const cleaned = applyUserContentPolicy(
+        block.text,
+        ctx.userContentPolicy,
+        ctx.hostContentPolicy
+      )
       if (cleaned) {
         textBlobs.push(cleaned)
         ;(blobChips as ParsedChip[][]).push([...chips])
@@ -1077,8 +1095,8 @@ export function loadHistory(
       // Chips are extracted from the same raw text BEFORE strip, so an
       // info-wrapper that fully consumes the user message still surfaces
       // as a chip-only bubble (e.g. Claude's `<task-notification>`).
-      const chips = extractInfoChips(rawText, ctx.userContentPolicy)
-      const text = applyUserContentPolicy(rawText, ctx.userContentPolicy)
+      const chips = extractInfoChips(rawText, ctx.userContentPolicy, ctx.hostContentPolicy)
+      const text = applyUserContentPolicy(rawText, ctx.userContentPolicy, ctx.hostContentPolicy)
       if (!text && chips.length === 0) continue
 
       const providerMessageId = msg.messageId

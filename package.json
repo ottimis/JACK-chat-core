@@ -1,6 +1,6 @@
 {
   "name": "@ottimis/jack-chat-core",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Transport-agnostic message reducer and types for Jack chat (desktop + mobile).",
   "license": "MIT",
   "repository": {

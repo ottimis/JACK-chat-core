@@ -24,11 +24,13 @@ export type {
   ToolCallResult
 } from './client-tool-handler.js'
 export {
+  JACK_HOST_TAG_PREFIX,
   TASK_TOOLS,
   applyUserContentPolicy,
   extractInfoChips,
   isJackTaskTool,
   isTaskTool,
+  mergeUserContentPolicies,
   pickStr,
   stripWrapperTags
 } from './helpers.js'

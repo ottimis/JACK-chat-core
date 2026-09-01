@@ -167,9 +167,14 @@ export type ParsedSlashEnvelope = {
  * Both arrays carry plain tag names without angle brackets:
  *   `['environment_context', 'jack-system']`
  *
- * The reducer matches `<tag>...</tag>` (XML-like) blocks case-sensitively
- * and non-greedy. Multi-line bodies are supported. Nesting of the same
- * tag is not handled — declare a distinct outer tag if you need it.
+ * The reducer matches `<tag>...</tag>` and `<tag attr="…">...</tag>`
+ * (XML-like) blocks case-sensitively and non-greedy. Multi-line bodies are
+ * supported. Nesting of the same tag is not handled — declare a distinct
+ * outer tag if you need it.
+ *
+ * **Reserved prefix**: tag names starting with `jack-` belong to the host
+ * (see {@link HostContentPolicy} and `JACK_HOST_TAG_PREFIX`). Providers must
+ * not declare them — on a collision the host declaration wins.
  */
 export type ProviderUserContentPolicy = {
   /**
@@ -196,11 +201,13 @@ export type ProviderUserContentPolicy = {
 /**
  * Declaration for a wrapper tag whose body should be parsed into a
  * structured chip payload. The reducer:
- *   1. Locates each `<tag>...</tag>` block in the user text.
- *   2. For each declared field, runs a sub-match `<from>...</from>`
+ *   1. Locates each `<tag>...</tag>` block in the user text, with or
+ *      without attributes on the opening tag.
+ *   2. Parses the opening tag's attributes into {@link ParsedChip.attributes}.
+ *   3. For each declared field, runs a sub-match `<from>...</from>`
  *      inside the wrapper body. The captured text (trimmed) is stored
  *      under `fields[name]`.
- *   3. Emits one {@link ParsedChip} per wrapper occurrence.
+ *   4. Emits one {@link ParsedChip} per wrapper occurrence.
  *
  * Multiple occurrences of the same wrapper in one user message produce
  * multiple chips. A field that doesn't match is simply omitted from
@@ -220,7 +227,15 @@ export type InfoWrapperTagSpec = {
   fields?: readonly { name: string; from: string }[]
 }
 
-export type ChipKind = 'env' | 'attachment' | 'workspace' | 'ide' | 'task' | 'other'
+export type ChipKind =
+  | 'env'
+  | 'attachment'
+  | 'workspace'
+  | 'ide'
+  | 'task'
+  /** Host-authored coordination envelope (Coordination Rooms). */
+  | 'room'
+  | 'other'
 
 /**
  * Renderer-facing payload extracted from a declared `infoWrapperTag`
@@ -234,8 +249,32 @@ export type ParsedChip = {
   label: string
   chipKind?: ChipKind
   fields: Record<string, string>
+  /**
+   * Attributes parsed off the opening tag (`<jack-room-message room="r1"
+   * from="codex-reviewer">` → `{ room: 'r1', from: 'codex-reviewer' }`).
+   * Values are unquoted and XML-entity-decoded. Present only when the
+   * opening tag carried at least one `name="value"` pair — bare
+   * valueless attributes are ignored.
+   */
+  attributes?: Record<string, string>
   raw: string
 }
+
+/**
+ * Host-declared counterpart of {@link ProviderUserContentPolicy}. Same two
+ * axes, but sourced from Jack itself instead of from a provider package:
+ * these wrappers are written by the *host* around content it injects into a
+ * session, so recognising them must not depend on which provider the session
+ * runs on (Coordination Rooms' `<jack-room-message>` envelope is the driving
+ * case — the host authors it for every provider).
+ *
+ * Merged with the provider policy by `mergeUserContentPolicies` before any
+ * stripping or chip extraction happens; host declarations win on a tag-name
+ * collision. The `jack-` prefix (`JACK_HOST_TAG_PREFIX`) is reserved for host
+ * tags, so collisions should not exist in the first place — the precedence
+ * rule is a backstop, not a design affordance.
+ */
+export type HostContentPolicy = ProviderUserContentPolicy
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reducer actions
